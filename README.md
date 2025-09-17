@@ -6,14 +6,14 @@
 ![license](https://img.shields.io/npm/l/@yestarz/ai-code-starter)
 ![node version](https://img.shields.io/node/v/@yestarz/ai-code-starter)
 
-一个强大的跨平台项目与 CLI 工具管理器，帮助开发者在多项目环境下高效切换与调用 AI 编码工具。
+快速启动项目并调用各种 AI 编码工具的统一入口。无需手动切换到项目目录，一条命令即可在任意项目下启动 `CodeX`、`Claude Code`、`Gemini Cli` 等 AI 工具。
 
 </div>
 
 ## ✨ 功能特性
 
 - 🗂️ **项目管理**：统一管理常用项目路径，快速切换工作目录
-- 🔧 **CLI 集成**：一键调用各种 AI 编码助手（Cursor、Claude、Codex 等）
+- 🔧 **CLI 集成**：一键调用各种 AI 编码助手（Codex、ClaudeCode、Gemini 等）
 - 💻 **跨平台支持**：完美适配 Windows、macOS 和 Linux
 - 🎯 **交互式操作**：友好的命令行交互界面，直观易用
 - 🔒 **安全可靠**：自动备份配置文件，操作前二次确认
@@ -116,16 +116,16 @@ acs code
   ],
   "cli": [
     {
-      "name": "Cursor",
-      "command": "cursor"
+      "name": "Codex",
+      "command": "codex"
     },
     {
-      "name": "Claude Dev",
+      "name": "Claude Code",
       "command": "claude"
     },
     {
-      "name": "GitHub Copilot CLI",
-      "command": "gh copilot"
+      "name": "Gemini Cli",
+      "command": "gemin"
     }
   ]
 }
