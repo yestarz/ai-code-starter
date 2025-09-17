@@ -1,0 +1,43 @@
+{
+  "name": "@yestarz/ai-code-starter",
+  "version": "1.0.3",
+  "type": "module",
+  "description": "跨平台项目与CLI管理工具",
+  "bin": {
+    "acs": "dist/index.cjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "cli",
+    "project-management",
+    "tooling"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "colorette": "^2.0.20",
+    "cross-spawn": "^7.0.3",
+    "inquirer": "^8.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsup": "^8.0.1",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
