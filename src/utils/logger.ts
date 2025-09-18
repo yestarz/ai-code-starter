@@ -1,7 +1,8 @@
 /**
  * 简单的日志封装，支持 verbose 控制详细输出。
  */
-import { bold, cyan, gray, red, yellow } from "colorette";
+import { cyan, gray, red, yellow } from "colorette";
+import type { Translator } from "../i18n";
 
 export interface Logger {
   info(message: string): void;
@@ -10,7 +11,7 @@ export interface Logger {
   debug(message: string): void;
 }
 
-export function createLogger(verbose: boolean): Logger {
+export function createLogger(verbose: boolean, translator: Translator): Logger {
   return {
     info(message: string) {
       console.log(cyan(message));
@@ -23,7 +24,9 @@ export function createLogger(verbose: boolean): Logger {
     },
     debug(message: string) {
       if (verbose) {
-        console.debug(gray(`[调试] ${message}`));
+        console.debug(
+          gray(`[${translator("logger.debugLabel")}] ${message}`)
+        );
       }
     },
   };
