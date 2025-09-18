@@ -15,6 +15,7 @@ import { runRemove } from "./commands/remove";
 import { runCode } from "./commands/code";
 import { runAdd } from "./commands/add";
 import { runLang } from "./commands/lang";
+import { runCli } from "./commands/cli";
 import { readConfig, ConfigError, type ConfigErrorIssue } from "./config";
 import {
   createTranslator,
@@ -36,6 +37,12 @@ const commandDefinitions: CommandDefinition[] = [
     aliases: ["ls"],
     descriptionKey: "command.list.description",
     handler: runList,
+  },
+  {
+    name: "cli",
+    aliases: [],
+    descriptionKey: "command.cli.description",
+    handler: runCli,
   },
   {
     name: "remove",
