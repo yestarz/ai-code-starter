@@ -14,24 +14,27 @@ export async function runAdd(
   context: CommandContext
 ): Promise<CommandResult> {
   const config = readConfig();
+  const { t } = context;
 
   const { inputPath } = await inquirer.prompt<{ inputPath: string }>([
     {
       type: "input",
       name: "inputPath",
-      message: "请输入项目路径",
+      message: t("add.promptPath"),
       validate(value: string) {
         try {
           const normalized = normalizePath(value);
           if (!fs.existsSync(normalized)) {
-            return "路径不存在，请重新输入";
+            return t("add.validate.notExists");
           }
           if (!fs.statSync(normalized).isDirectory()) {
-            return "目标不是目录";
+            return t("add.validate.notDirectory");
           }
           return true;
         } catch (error) {
-          return (error as Error).message;
+          return t("add.validate.unexpected", {
+            message: (error as Error).message,
+          });
         }
       },
     },
@@ -45,8 +48,8 @@ export async function runAdd(
 
   if (sameName || samePath) {
     const warningMessage = samePath
-      ? "该路径已存在于配置中，确定仍要重复添加吗？"
-      : "存在同名项目，是否继续？";
+      ? t("add.duplicatePath")
+      : t("add.duplicateName");
     const { confirmDuplicate } = await inquirer.prompt<{ confirmDuplicate: boolean }>([
       {
         type: "confirm",
@@ -57,7 +60,7 @@ export async function runAdd(
     ]);
 
     if (!confirmDuplicate) {
-      context.logger.info("已取消添加操作");
+      context.logger.info(t("add.cancelled"));
       return { code: 0 };
     }
   }
@@ -77,7 +80,10 @@ export async function runAdd(
 
   context.logger.info(
     green(
-      `添加成功：${bold(projectName)} -> ${formatPathForDisplay(absolutePath)}`
+      t("add.success", {
+        name: bold(projectName),
+        path: formatPathForDisplay(absolutePath),
+      })
     )
   );
 

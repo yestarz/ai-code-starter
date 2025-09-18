@@ -14,27 +14,58 @@ import {
   writeJsonFileSync,
 } from "./utils/fs";
 import { AcsConfig, Project } from "./types";
+import type { Language } from "./i18n";
 import { normalizePath } from "./utils/path";
 
 const CONFIG_DIR_NAME = ".acs";
 const CONFIG_FILE_NAME = "config.json";
 
+const languageSchema = z.enum(["zh", "en", "ja"]).default("zh");
+
 const projectSchema = z.object({
-  name: z.string().min(1, "项目名称不能为空"),
-  path: z.string().min(1, "项目路径不能为空"),
+  name: z.string().min(1, "errors.projectNameRequired"),
+  path: z.string().min(1, "errors.projectPathRequired"),
 });
 
 const cliSchema = z.object({
-  name: z.string().min(1, "CLI 名称不能为空"),
-  command: z.string().min(1, "CLI 命令不能为空"),
+  name: z.string().min(1, "errors.cliNameRequired"),
+  command: z.string().min(1, "errors.cliCommandRequired"),
 });
 
 const configSchema = z.object({
+  language: languageSchema,
   projects: z.array(projectSchema).default([]),
   cli: z.array(cliSchema).default([]),
 });
 
+export type ConfigErrorCode = "read_failed" | "invalid_format" | "write_failed";
+
+export interface ConfigErrorIssue {
+  path: string;
+  messageKey: string;
+}
+
+export interface ConfigErrorDetails {
+  path?: string;
+  issues?: ConfigErrorIssue[];
+  cause?: unknown;
+  errorMessage?: string;
+}
+
+export class ConfigError extends Error {
+  constructor(
+    public code: ConfigErrorCode,
+    public details: ConfigErrorDetails = {}
+  ) {
+    super(code, details.cause ? { cause: details.cause } : undefined);
+    this.name = "ConfigError";
+  }
+}
+
+const DEFAULT_LANGUAGE: Language = "zh";
+
 const DEFAULT_CONFIG: AcsConfig = {
+  language: DEFAULT_LANGUAGE,
   projects: [],
   cli: [
     {
@@ -48,7 +79,7 @@ const DEFAULT_CONFIG: AcsConfig = {
     {
       name: "Gemini Cli",
       command: "gemini",
-    }
+    },
   ],
 };
 
@@ -79,20 +110,29 @@ export function getConfigPath(): string {
 export function readConfig(): AcsConfig {
   const filePath = getConfigPath();
   if (!fs.existsSync(filePath)) {
-    writeJsonFileSync(filePath, DEFAULT_CONFIG);
+    try {
+      writeJsonFileSync(filePath, DEFAULT_CONFIG);
+    } catch (error) {
+      throw new ConfigError("write_failed", {
+        path: filePath,
+        cause: error,
+        errorMessage: (error as Error).message,
+      });
+    }
   }
 
   const raw = readJsonFileSync<unknown>(filePath);
   if (!raw) {
-    throw new Error(`配置文件 ${filePath} 无法读取，请手动检查`);
+    throw new ConfigError("read_failed", { path: filePath });
   }
 
   const parsed = configSchema.safeParse(raw);
   if (!parsed.success) {
-    const messages = parsed.error.issues
-      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-      .join("; ");
-    throw new Error(`配置文件格式错误：${messages}`);
+    const issues: ConfigErrorIssue[] = parsed.error.issues.map((issue) => ({
+      path: issue.path.join("."),
+      messageKey: issue.message,
+    }));
+    throw new ConfigError("invalid_format", { path: filePath, issues });
   }
 
   // 归一化路径，提升跨平台一致性
@@ -102,6 +142,7 @@ export function readConfig(): AcsConfig {
   }));
 
   return {
+    language: parsed.data.language,
     projects: normalizedProjects,
     cli: parsed.data.cli,
   };
@@ -113,14 +154,28 @@ export function readConfig(): AcsConfig {
 export function writeConfig(next: AcsConfig): void {
   const filePath = getConfigPath();
   const backupPath = resolveBackupFile();
-  const data = configSchema.parse(next);
+  let data: AcsConfig;
+  try {
+    data = configSchema.parse(next);
+  } catch (error) {
+    const zodError = error as z.ZodError;
+    const issues: ConfigErrorIssue[] = zodError.issues.map((issue) => ({
+      path: issue.path.join("."),
+      messageKey: issue.message,
+    }));
+    throw new ConfigError("invalid_format", { path: filePath, issues, cause: error });
+  }
   backupFileSync(filePath, backupPath);
   try {
     writeJsonFileSync(filePath, data);
     removeFileIfExists(backupPath);
   } catch (error) {
     restoreBackupSync(backupPath, filePath);
-    throw new Error(`写入配置失败：${(error as Error).message}`);
+    throw new ConfigError("write_failed", {
+      path: filePath,
+      cause: error,
+      errorMessage: (error as Error).message,
+    });
   }
 }
 

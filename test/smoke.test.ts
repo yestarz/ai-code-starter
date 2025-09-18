@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLogger } from "../src/utils/logger";
 import { getConfigPath, readConfig, writeConfig } from "../src/config";
 import { runList } from "../src/commands/list";
+import { createTranslator } from "../src/i18n";
 
 describe("acs CLI 鍐掔儫娴嬭瘯", () => {
   let tempHome: string;
@@ -24,11 +25,13 @@ describe("acs CLI 鍐掔儫娴嬭瘯", () => {
   });
 
   it("棣栨璇诲彇浼氬垱寤洪粯璁ら厤缃紝骞惰兘鍒楀嚭鏂板姞椤圭洰", async () => {
-    const logger = createLogger(false);
+    const translator = createTranslator("zh");
+    const logger = createLogger(false, translator);
     const config = readConfig();
     expect(Array.isArray(config.projects)).toBe(true);
+    expect(config.language).toBe("zh");
     expect(config.cli).toContainEqual({
-      name: "codex",
+      name: "CodeX",
       command: "codex",
     });
 
@@ -52,7 +55,7 @@ describe("acs CLI 鍐掔儫娴嬭瘯", () => {
 
     await runList(
       { flags: { json: true }, positional: [] },
-      { verbose: false, logger }
+      { verbose: false, logger, language: "zh", t: translator }
     );
 
     expect(logSpy).toHaveBeenCalled();

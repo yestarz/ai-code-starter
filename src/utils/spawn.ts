@@ -3,10 +3,12 @@
  */
 import crossSpawn from "cross-spawn";
 import { formatPathForDisplay } from "./path";
+import type { Translator } from "../i18n";
 
 export interface SpawnOptions {
   cwd?: string;
   verbose?: boolean;
+  translator?: Translator;
 }
 
 interface ParsedCommand {
@@ -17,7 +19,10 @@ interface ParsedCommand {
 /**
  * 将命令行字符串拆分为命令与参数，支持简单的引号场景。
  */
-export function parseCommand(commandLine: string): ParsedCommand {
+export function parseCommand(
+  commandLine: string,
+  translator?: Translator
+): ParsedCommand {
   const tokens = commandLine
     .trim()
     .match(/(?:[^\s"']+|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')+/g) ?? [];
@@ -29,7 +34,10 @@ export function parseCommand(commandLine: string): ParsedCommand {
   );
   const [command, ...args] = cleaned;
   if (!command) {
-    throw new Error("未提供可执行命令");
+    const message = translator
+      ? translator("spawn.missingCommand")
+      : "未提供可执行命令";
+    throw new Error(message);
   }
   return { command, args };
 }
@@ -38,7 +46,7 @@ export function parseCommand(commandLine: string): ParsedCommand {
  * 直接执行命令字符串。
  */
 export function spawnCommand(commandLine: string, options: SpawnOptions = {}): Promise<number> {
-  const parsed = parseCommand(commandLine);
+  const parsed = parseCommand(commandLine, options.translator);
   return spawnWithArgs(parsed.command, parsed.args, options);
 }
 
@@ -50,10 +58,18 @@ export function spawnWithArgs(
   args: string[],
   options: SpawnOptions = {}
 ): Promise<number> {
-  const { cwd, verbose } = options;
+  const { cwd, verbose, translator } = options;
   if (verbose) {
     const location = cwd ? ` @ ${formatPathForDisplay(cwd)}` : "";
-    console.log(`执行命令: ${command} ${args.join(" ")}${location}`.trim());
+    const argsText = args.length ? ` ${args.join(" ")}` : "";
+    const message = translator
+      ? translator("spawn.verbose", {
+          command,
+          args: argsText,
+          location,
+        })
+      : `执行命令: ${command}${argsText}${location}`;
+    console.log(message.trim());
   }
 
   return new Promise((resolve, reject) => {
@@ -69,7 +85,10 @@ export function spawnWithArgs(
 
     child.on("close", (code, signal) => {
       if (signal) {
-        console.warn(`子进程因信号 ${signal} 终止`);
+        const message = translator
+          ? translator("spawn.signal", { signal })
+          : `子进程因信号 ${signal} 终止`;
+        console.warn(message);
       }
       resolve(code ?? 0);
     });
