@@ -13,9 +13,10 @@ export async function runRemove(
 ): Promise<CommandResult> {
   const config = readConfig();
   const { projects } = config;
+  const { t } = context;
 
   if (!projects.length) {
-    context.logger.warn("当前没有可删除的项目");
+    context.logger.warn(t("remove.none"));
     return { code: 0 };
   }
 
@@ -28,13 +29,13 @@ export async function runRemove(
     {
       type: "checkbox",
       name: "selectedPaths",
-      message: "选择要删除的项目",
+      message: t("remove.promptSelect"),
       choices,
     },
   ]);
 
   if (!selectedPaths.length) {
-    context.logger.warn("未选择任何项目，操作已取消");
+    context.logger.warn(t("remove.cancelledNoSelection"));
     return { code: 0 };
   }
 
@@ -42,13 +43,13 @@ export async function runRemove(
     {
       type: "confirm",
       name: "confirm",
-      message: `确认删除 ${selectedPaths.length} 个项目吗？`,
+      message: t("remove.promptConfirm", { count: selectedPaths.length }),
       default: false,
     },
   ]);
 
   if (!confirm) {
-    context.logger.info("已取消删除操作");
+    context.logger.info(t("remove.cancelled"));
     return { code: 0 };
   }
 
@@ -62,9 +63,10 @@ export async function runRemove(
   writeConfig({ ...config, projects: remaining });
   context.logger.info(
     green(
-      `已删除 ${removedProjects.length} 个项目：${removedProjects
-        .map((item) => item.name)
-        .join(", ")}`
+      t("remove.success", {
+        count: removedProjects.length,
+        names: removedProjects.map((item) => item.name).join(", "),
+      })
     )
   );
 
@@ -72,7 +74,7 @@ export async function runRemove(
     const removedNames = removedProjects
       .map((item) => `${item.name}(${formatPathForDisplay(item.path)})`)
       .join(", ");
-    context.logger.debug(`删除的项目详情：${removedNames}`);
+    context.logger.debug(t("remove.debugDetails", { details: removedNames }));
   }
 
   return { code: 0 };

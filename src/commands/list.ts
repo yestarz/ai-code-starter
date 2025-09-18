@@ -12,6 +12,7 @@ export async function runList(
 ): Promise<CommandResult> {
   const config = readConfig();
   const projects = config.projects;
+  const { t } = context;
 
   if (args.flags.json) {
     console.log(JSON.stringify(projects, null, 2));
@@ -19,21 +20,22 @@ export async function runList(
   }
 
   if (!projects.length) {
-    console.log(gray("暂无项目。可通过 `acs add` 添加新的项目。"));
+    console.log(gray(t("list.empty")));
     return { code: 0 };
   }
 
-  console.log(bold(cyan(`共 ${projects.length} 个项目：`)));
+  console.log(bold(cyan(t("list.summary", { count: projects.length }))));
   projects.forEach((project, index) => {
-    console.log(
-      `${index + 1}. ${bold(project.name)} -> ${gray(
-        formatPathForDisplay(project.path)
-      )}`
-    );
+    const entry = t("list.entry", {
+      index: index + 1,
+      name: bold(project.name),
+      path: gray(formatPathForDisplay(project.path)),
+    });
+    console.log(entry);
   });
 
   if (context.verbose) {
-    context.logger.debug(`当前配置包含 ${projects.length} 条记录`);
+    context.logger.debug(t("list.debugCount", { count: projects.length }));
   }
 
   return { code: 0 };

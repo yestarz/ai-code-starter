@@ -14,16 +14,15 @@ export async function runCode(
   context: CommandContext
 ): Promise<CommandResult> {
   const config = readConfig();
+  const { t } = context;
 
   if (!config.projects.length) {
-    context.logger.warn("当前没有项目，请先通过 `acs add` 添加。");
+    context.logger.warn(t("code.noProjects"));
     return { code: 1 };
   }
 
   if (!config.cli.length) {
-    context.logger.warn(
-      `CLI 列表为空，请编辑 ${getConfigPath()} 添加可用 CLI。`
-    );
+    context.logger.warn(t("code.noCli", { path: getConfigPath() }));
     return { code: 1 };
   }
 
@@ -33,9 +32,9 @@ export async function runCode(
       formatPathForDisplay(project.path)
     )})`;
     return {
-      name: exists ? display : `${display} [路径不存在]`,
+      name: exists ? display : `${display}${t("code.projectMissingSuffix")}`,
       value: project.path,
-      disabled: exists ? false : "路径不存在",
+      disabled: exists ? false : t("code.projectMissingLabel"),
     };
   });
 
@@ -45,7 +44,7 @@ export async function runCode(
     {
       type: "list",
       name: "selectedProjectPath",
-      message: "选择需要进入的项目",
+      message: t("code.promptProject"),
       choices: projectChoices,
     },
   ]);
@@ -55,7 +54,7 @@ export async function runCode(
   );
 
   if (!project) {
-    throw new Error("选择的项目不存在，可能配置已变更。");
+    throw new Error(t("code.projectMissing"));
   }
 
   const cliChoices = config.cli.map((tool) => ({
@@ -67,18 +66,22 @@ export async function runCode(
     {
       type: "list",
       name: "selectedCli",
-      message: "选择要运行的 CLI",
+      message: t("code.promptCli"),
       choices: cliChoices,
     },
   ]);
 
   context.logger.info(
-    `将在 ${bold(project.name)} 中执行 ${magenta(selectedCli.name)}`
+    t("code.execute", {
+      project: bold(project.name),
+      cli: magenta(selectedCli.name),
+    })
   );
 
   const exitCode = await spawnCommand(selectedCli.command, {
     cwd: project.path,
     verbose: context.verbose,
+    translator: t,
   });
 
   return { code: exitCode };
