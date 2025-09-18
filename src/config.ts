@@ -53,12 +53,17 @@ export interface ConfigErrorDetails {
 }
 
 export class ConfigError extends Error {
+  public cause?: unknown;
+
   constructor(
     public code: ConfigErrorCode,
     public details: ConfigErrorDetails = {}
   ) {
-    super(code, details.cause ? { cause: details.cause } : undefined);
+    super(code);
     this.name = "ConfigError";
+    if (details.cause) {
+      this.cause = details.cause;
+    }
   }
 }
 
