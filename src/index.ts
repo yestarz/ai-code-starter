@@ -15,6 +15,7 @@ import { runRemove } from "./commands/remove";
 import { runCode } from "./commands/code";
 import { runAdd } from "./commands/add";
 import { runLang } from "./commands/lang";
+import { runConfig } from "./commands/config";
 import { runCli } from "./commands/cli";
 import { readConfig, ConfigError, type ConfigErrorIssue } from "./config";
 import {
@@ -67,6 +68,12 @@ const commandDefinitions: CommandDefinition[] = [
     aliases: [],
     descriptionKey: "command.lang.description",
     handler: runLang,
+  },
+  {
+    name: "config",
+    aliases: [],
+    descriptionKey: "command.config.description",
+    handler: runConfig,
   },
 ];
 

@@ -32,10 +32,33 @@ const cliSchema = z.object({
   command: z.string().min(1, "errors.cliCommandRequired"),
 });
 
+const claudeProfileSchema = z
+  .object({
+    env: z.record(z.string(), z.string()).optional(),
+    model: z.string().min(1, "errors.claude.modelRequired").optional(),
+  })
+  .passthrough();
+
+const claudeConfigSchema = z.object({
+  current: z.string().min(1, "errors.claude.currentRequired"),
+  configs: z.record(
+    z.string().min(1, "errors.claude.profileNameRequired"),
+    claudeProfileSchema
+  ),
+});
+
+const providerConfigSchema = z
+  .object({
+    claude: claudeConfigSchema.optional(),
+  })
+  .passthrough()
+  .default({});
+
 const configSchema = z.object({
   language: languageSchema,
   projects: z.array(projectSchema).default([]),
   cli: z.array(cliSchema).default([]),
+  config: providerConfigSchema,
 });
 
 export type ConfigErrorCode = "read_failed" | "invalid_format" | "write_failed";
@@ -86,6 +109,7 @@ const DEFAULT_CONFIG: AcsConfig = {
       command: "gemini",
     },
   ],
+  config: {},
 };
 
 function resolveConfigDir(): string {
@@ -150,6 +174,7 @@ export function readConfig(): AcsConfig {
     language: parsed.data.language,
     projects: normalizedProjects,
     cli: parsed.data.cli,
+    config: parsed.data.config,
   };
 }
 

@@ -14,10 +14,26 @@ export interface CliTool {
   command: string;
 }
 
+export interface ClaudeProfile {
+  env?: Record<string, string>;
+  model?: string;
+}
+
+export interface ClaudeConfig {
+  current: string;
+  configs: Record<string, ClaudeProfile>;
+}
+
+export interface ProviderConfigs {
+  claude?: ClaudeConfig;
+  [key: string]: unknown;
+}
+
 export interface AcsConfig {
   projects: Project[];
   cli: CliTool[];
   language: Language;
+  config: ProviderConfigs;
 }
 
 export interface CommandContext {
