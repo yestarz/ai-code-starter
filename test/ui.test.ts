@@ -19,7 +19,7 @@ describe("UI server", () => {
   let baseUrl: string;
 
   async function bootServer() {
-    const result = await startUiServer({ port: 0, host: "127.0.0.1" });
+    const result = await startUiServer({ port: 0 });
     server = result.server;
     baseUrl = result.url;
   }
@@ -46,8 +46,9 @@ describe("UI server", () => {
     const response = await fetch(baseUrl);
     const html = await response.text();
     expect(response.status).toBe(200);
-    expect(html).toContain("ACS 配置中心");
-    expect(html).toContain("配置列表");
+    expect(html).toContain("ACS 控制台");
+    expect(html).toContain("项目管理");
+    expect(html).toContain("CLI 工具管理");
   });
 
   it("supports creating, switching and deleting claude profiles", async () => {
@@ -56,50 +57,58 @@ describe("UI server", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "work",
-        profile: {
-          model: "claude-work",
-          env: {
-            ANTHROPIC_AUTH_TOKEN: "sk-work",
-            ANTHROPIC_BASE_URL: "https://api.example.com",
-          },
+        model: "claude-work",
+        env: {
+          ANTHROPIC_AUTH_TOKEN: "sk-work",
+          ANTHROPIC_BASE_URL: "https://api.example.com",
         },
         setCurrent: true,
       }),
     });
     const createResult = (await createResponse.json()) as {
       success: boolean;
-      data: { current: string | null };
+      data: { ok: boolean };
     };
     expect(createResult.success).toBe(true);
-    expect(createResult.data.current).toBe("work");
+    expect(createResult.data.ok).toBe(true);
 
-    let config = readConfig();
-    expect(config.config.claude?.configs.work?.model).toBe("claude-work");
+    let claudeState = await fetch(`${baseUrl}/api/claude`).then((res) =>
+      res.json()
+    );
+    expect(claudeState.success).toBe(true);
+    expect(claudeState.data.current.name).toBe("work");
+    expect(claudeState.data.current.model).toBe("claude-work");
 
+    const id = Buffer.from("work", "utf8").toString("base64url");
     const switchResponse = await fetch(`${baseUrl}/api/claude/current`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "work" }),
+      body: JSON.stringify({ id }),
     });
     const switchResult = (await switchResponse.json()) as {
       success: boolean;
-      data: { current: string | null };
+      data: { ok: boolean };
     };
     expect(switchResult.success).toBe(true);
-    expect(switchResult.data.current).toBe("work");
+    expect(switchResult.data.ok).toBe(true);
 
-    const deleteResponse = await fetch(
-      `${baseUrl}/api/claude/profile/work`,
-      { method: "DELETE" }
-    );
+    const deleteResponse = await fetch(`${baseUrl}/api/claude/profile/${id}`, {
+      method: "DELETE",
+    });
     const deleteResult = (await deleteResponse.json()) as {
       success: boolean;
-      data: { current: string | null };
+      data: { ok: boolean };
     };
     expect(deleteResult.success).toBe(true);
-    expect(deleteResult.data.current).toBeNull();
+    expect(deleteResult.data.ok).toBe(true);
 
-    config = readConfig();
-    expect(config.config.claude).toBeUndefined();
+    claudeState = await fetch(`${baseUrl}/api/claude`).then((res) => res.json());
+    expect(claudeState.success).toBe(true);
+    expect(claudeState.data.configs).toHaveLength(0);
+    expect(claudeState.data.current).toBeNull();
+
+    const config = readConfig();
+    expect(config.config.claude?.configs).toEqual({});
+    expect(config.config.claude?.current).toBeUndefined();
   });
 });

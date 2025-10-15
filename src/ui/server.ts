@@ -1,226 +1,450 @@
 import http from "node:http";
 import { URL } from "node:url";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import { readConfig, writeConfig } from "../config";
-import { AcsConfig, ClaudeConfig, ClaudeProfile } from "../types";
+import {
+  AcsConfig,
+  CliTool,
+  ClaudeProfile,
+  Project,
+  ClaudeConfig,
+} from "../types";
+import { formatPathForDisplay, normalizePath } from "../utils/path";
 import { applyClaudeProfileToSettings } from "../utils/claude";
 import type { Logger } from "../utils/logger";
 
 export const DEFAULT_UI_PORT = 8888;
+const DEFAULT_UI_HOST = "127.0.0.1";
+
+interface StartUiServerOptions {
+  port?: number;
+  host?: string;
+  logger?: Logger;
+}
+
+interface JsonSuccess<T> {
+  success: true;
+  data: T;
+}
+
+interface JsonError {
+  success: false;
+  error: {
+    message: string;
+    code?: string;
+    details?: unknown;
+  };
+}
+
+type JsonResponse<T> = JsonSuccess<T> | JsonError;
+
+interface ProjectView extends Project {
+  id: string;
+  displayPath: string;
+  exists: boolean;
+  isDirectory: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface ProjectDetailView extends ProjectView {
+  sizeInBytes?: number;
+}
+
+interface CliToolView extends CliTool {
+  id: string;
+}
+
+interface ClaudeProfileView {
+  id: string;
+  name: string;
+  model?: string;
+  env: Record<string, string>;
+  maskedEnv: Record<string, string>;
+  isCurrent: boolean;
+}
+
+const MAX_COMMAND_OUTPUT = 50_000;
+const TEXT_ENCODER = new TextEncoder();
 
 const UI_HTML = `<!DOCTYPE html>
 <html lang="zh">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ACS 配置中心</title>
+  <title>ACS 控制台</title>
   <style>
     :root {
       color-scheme: light dark;
       font-family: "Inter", "PingFang SC", "Segoe UI", sans-serif;
-      --bg: #f8fafc;
+      --bg: #f1f5f9;
       --fg: #0f172a;
+      --muted: #64748b;
       --card: #ffffff;
-      --border: rgba(15, 23, 42, 0.1);
+      --border: rgba(15, 23, 42, 0.08);
+      --shadow: rgba(15, 23, 42, 0.15);
       --accent: #2563eb;
       --accent-soft: rgba(37, 99, 235, 0.12);
       --danger: #dc2626;
       --success: #15803d;
-      --muted: #64748b;
+      --warning: #c2410c;
+    }
+
+    * {
+      box-sizing: border-box;
     }
 
     body {
       margin: 0;
       min-height: 100vh;
-      background: var(--bg);
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.15), transparent 55%), #e2e8f0;
       color: var(--fg);
       display: flex;
       flex-direction: column;
     }
 
     header {
-      padding: 32px 24px;
-      background: linear-gradient(135deg, #1d4ed8, #3b82f6);
-      color: #fff;
-      box-shadow: 0 18px 44px rgba(37, 99, 235, 0.35);
+      padding: 28px 36px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
     }
 
     header h1 {
       margin: 0;
       font-size: 28px;
+      background: linear-gradient(135deg, #1e3a8a, #2563eb);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
 
     header p {
-      margin: 12px 0 0;
-      max-width: 680px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 520px;
       line-height: 1.6;
-      color: rgba(255, 255, 255, 0.85);
+    }
+
+    nav {
+      margin-left: auto;
+      display: flex;
+      gap: 12px;
+    }
+
+    nav button {
+      border: none;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-weight: 600;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+    }
+
+    nav button.active {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 14px 32px rgba(37, 99, 235, 0.25);
     }
 
     main {
       flex: 1;
-      padding: 24px;
+      padding: 0 36px 40px;
       display: grid;
-      gap: 24px;
-      grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+      gap: 28px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     }
 
-    @media (max-width: 960px) {
-      main {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .card {
-      background: var(--card);
-      border-radius: 18px;
-      box-shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
+    section {
+      background: rgba(255, 255, 255, 0.96);
+      border-radius: 22px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: 0 22px 48px rgba(15, 23, 42, 0.12);
       padding: 24px;
-      display: flex;
+      display: none;
       flex-direction: column;
-      gap: 18px;
+      gap: 20px;
     }
 
-    .card-header {
+    section.active {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
     }
 
-    .card-header h2 {
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .section-header h2 {
       margin: 0;
       font-size: 20px;
     }
 
-    .ghost-button {
-      border: none;
-      background: var(--accent-soft);
-      color: var(--accent);
-      padding: 8px 16px;
-      border-radius: 999px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: transform 0.2s ease;
-    }
-
-    .ghost-button:hover {
-      transform: translateY(-1px);
-    }
-
-    .profile-card {
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      transition: box-shadow 0.2s ease, border 0.2s ease;
-    }
-
-    .profile-card.current {
-      border-color: rgba(37, 99, 235, 0.45);
-      box-shadow: 0 16px 36px rgba(37, 99, 235, 0.18);
-    }
-
-    .profile-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .profile-head h3 {
-      margin: 0;
-      font-size: 18px;
-    }
-
-    .badge {
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: rgba(37, 99, 235, 0.15);
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 0.3px;
-    }
-
-    .profile-meta {
+    .section-header p {
       margin: 0;
       color: var(--muted);
       font-size: 14px;
     }
 
-    .env-list {
-      margin: 0;
-      padding: 0;
-      list-style: none;
+    .section-grid {
       display: grid;
-      gap: 8px;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     }
 
-    .env-item {
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      border-radius: 12px;
-      padding: 8px 12px;
+    .card {
+      background: var(--card);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+      padding: 20px;
       display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      font-size: 13px;
+      flex-direction: column;
+      gap: 18px;
     }
 
-    .env-item span {
-      font-weight: 600;
-      color: var(--muted);
+    .card h3 {
+      margin: 0;
+      font-size: 18px;
     }
 
-    .env-item code {
-      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead {
+      background: rgba(148, 163, 184, 0.12);
       color: var(--fg);
-      overflow-wrap: anywhere;
     }
 
-    .profile-actions {
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 14px;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    tbody tr:hover {
+      background: rgba(37, 99, 235, 0.06);
+    }
+
+    .toolbar {
       display: flex;
-      gap: 8px;
+      align-items: center;
+      gap: 12px;
       flex-wrap: wrap;
     }
 
-    .profile-actions button {
-      border: none;
-      border-radius: 10px;
-      padding: 8px 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    .toolbar input {
+      flex: 1;
+      min-width: 180px;
     }
 
-    .profile-actions button.primary {
+    input, textarea {
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      color: var(--fg);
+      background: rgba(255, 255, 255, 0.95);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    input:focus, textarea:focus {
+      outline: 2px solid rgba(37, 99, 235, 0.35);
+      outline-offset: 2px;
+    }
+
+    button.primary {
+      border: none;
       background: var(--accent);
       color: #fff;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 16px 40px rgba(37, 99, 235, 0.25);
+      transition: transform 0.2s ease;
     }
 
-    .profile-actions button.secondary {
-      background: rgba(15, 23, 42, 0.06);
+    button.secondary {
+      border: none;
+      background: rgba(148, 163, 184, 0.16);
       color: var(--fg);
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 600;
+      cursor: pointer;
     }
 
-    .profile-actions button.danger {
+    button.danger {
+      border: none;
       background: rgba(220, 38, 38, 0.12);
+      color: var(--danger);
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.ghost {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .status.success {
+      color: var(--success);
+    }
+
+    .status.error {
       color: var(--danger);
     }
 
-    .profile-actions button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 12px 22px rgba(15, 23, 42, 0.12);
+    .status.warning {
+      color: var(--warning);
     }
 
-    form {
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(37, 99, 235, 0.12);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .mono {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    .empty {
+      padding: 24px;
+      text-align: center;
+      border-radius: 16px;
+      border: 1px dashed rgba(148, 163, 184, 0.35);
+      background: rgba(241, 245, 249, 0.6);
+      color: var(--muted);
+    }
+
+    .log-panel {
+      background: rgba(15, 23, 42, 0.94);
+      color: #e2e8f0;
+      border-radius: 16px;
+      padding: 16px;
+      min-height: 150px;
+      max-height: 260px;
+      overflow: auto;
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+      font-size: 13px;
+    }
+
+    .link-row {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 999;
+    }
+
+    .modal {
+      width: min(560px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      background: var(--card);
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: 0 28px 64px rgba(15, 23, 42, 0.32);
+      padding: 24px;
       display: flex;
       flex-direction: column;
       gap: 16px;
     }
 
-    label {
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .modal-header button {
+      border: none;
+      background: transparent;
+      font-size: 24px;
+      line-height: 1;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    .modal-form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .modal-form label {
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -228,25 +452,18 @@ const UI_HTML = `<!DOCTYPE html>
       font-weight: 600;
     }
 
-    input[type="text"],
-    input[type="url"] {
-      border: 1px solid rgba(15, 23, 42, 0.12);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 14px;
-      background: rgba(255, 255, 255, 0.92);
-      color: var(--fg);
+    .option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--muted);
     }
 
-    input:focus {
-      outline: 2px solid rgba(37, 99, 235, 0.35);
-      outline-offset: 2px;
-    }
-
-    .env-editor {
+    .env-grid {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
     }
 
     .env-row {
@@ -258,812 +475,2146 @@ const UI_HTML = `<!DOCTYPE html>
 
     .env-row button {
       border: none;
-      padding: 8px 10px;
       border-radius: 10px;
-      background: rgba(220, 38, 38, 0.12);
+      padding: 8px 12px;
+      background: rgba(220, 38, 38, 0.14);
       color: var(--danger);
       font-weight: 600;
       cursor: pointer;
     }
 
-    .checkbox-field {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 14px;
+    .input-error {
+      border-color: rgba(220, 38, 38, 0.6);
     }
 
-    .form-actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
     }
 
-    .form-actions button {
-      border: none;
-      border-radius: 999px;
-      padding: 10px 18px;
-      font-weight: 600;
+    .subtle-link {
+      font-size: 13px;
+      color: var(--accent);
       cursor: pointer;
     }
 
-    .form-actions button.primary {
-      background: var(--accent);
-      color: #fff;
+    [hidden] {
+      display: none !important;
     }
 
-    .form-actions button.secondary {
-      background: rgba(15, 23, 42, 0.08);
-      color: var(--fg);
-    }
-
-    .status-bar {
-      padding: 16px 24px;
-      border-top: 1px solid rgba(15, 23, 42, 0.1);
-      background: rgba(15, 23, 42, 0.02);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-      font-size: 14px;
-      color: var(--muted);
-    }
-
-    .status-bar span.success {
-      color: var(--success);
-    }
-
-    .status-bar span.error {
-      color: var(--danger);
-    }
-
-    .empty {
-      padding: 32px;
-      text-align: center;
-      border: 1px dashed var(--border);
-      border-radius: 16px;
-      color: var(--muted);
-      background: rgba(255, 255, 255, 0.6);
+    @media (max-width: 960px) {
+      header {
+        padding: 24px 20px;
+      }
+      main {
+        padding: 0 20px 24px;
+      }
+      section {
+        padding: 20px;
+      }
+      nav {
+        width: 100%;
+        justify-content: flex-start;
+      }
+      nav button {
+        flex: 1;
+      }
+      .section-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>ACS 配置中心</h1>
-    <p>通过界面管理 ~/.acs/config.json，支持查看、编辑、删除以及切换 Claude CLI 配置。</p>
+    <div>
+      <h1>ACS 控制台</h1>
+      <p>通过 Web 界面管理项目、预设 CLI 工具与 Claude 配置，支持可视化操作与命令触发。</p>
+    </div>
+    <nav>
+      <button class="active" data-view="projects">项目管理</button>
+      <button data-view="cli">CLI 工具</button>
+      <button data-view="claude">Claude 配置</button>
+    </nav>
   </header>
   <main>
-    <section class="card" aria-label="配置列表">
-      <div class="card-header">
-        <h2>配置列表</h2>
-        <button id="refreshButton" class="ghost-button" type="button">刷新</button>
+    <section id="view-projects" class="active">
+      <div class="section-header">
+        <div>
+          <h2>项目管理</h2>
+          <p>以表格查看所有项目，支持搜索、详情与批量删除。</p>
+        </div>
+        <div class="status" id="project-status">正在加载项目…</div>
       </div>
-      <div id="profileList"></div>
-    </section>
-    <section class="card" aria-label="配置编辑">
-      <div class="card-header">
-        <h2 id="formTitle">新增配置</h2>
-        <button id="newProfileButton" class="ghost-button" type="button">新建</button>
-      </div>
-      <form id="profileForm">
-        <label>
-          配置名称
-          <input id="profileName" type="text" placeholder="例如：work" autocomplete="off" required />
-        </label>
-        <label>
-          默认模型
-          <input id="profileModel" type="text" placeholder="例如：claude-3-5-sonnet" autocomplete="off" />
-        </label>
-        <div class="env-editor">
-          <div class="card-header" style="padding: 0;">
-            <h2 style="font-size:16px; margin:0;">环境变量</h2>
-            <button id="addEnv" class="ghost-button" type="button">新增变量</button>
+      <div class="section-grid">
+        <div class="card">
+          <div class="section-header">
+            <h3>项目列表</h3>
+            <div class="link-row">
+              <button class="primary" id="project-create">新增项目</button>
+              <button class="secondary" id="refresh-projects">刷新</button>
+            </div>
           </div>
-          <div id="envList"></div>
+          <div class="toolbar">
+            <input id="project-search" type="search" placeholder="按名称或路径搜索…" />
+            <button class="danger" id="remove-projects" disabled>删除所选</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="project-select-all" /></th>
+                <th>名称</th>
+                <th>路径</th>
+                <th>状态</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="project-table-body"></tbody>
+          </table>
+          <div class="empty" id="project-empty" hidden>暂无项目，点击“新增项目”进行维护。</div>
         </div>
-        <label class="checkbox-field">
-          <input id="setCurrent" type="checkbox" />
-          <span>保存后设为当前配置</span>
-        </label>
-        <div class="form-actions">
-          <button class="primary" type="submit">保存</button>
-          <button class="secondary" id="cancelEdit" type="button">重置</button>
+      </div>
+    </section>
+
+    <section id="view-cli">
+      <div class="section-header">
+        <div>
+          <h2>CLI 工具管理</h2>
+          <p>集中存储脚本命令，可一键执行并查看日志输出。</p>
         </div>
-      </form>
+        <div class="status" id="cli-status">正在加载工具…</div>
+      </div>
+      <div class="section-grid">
+        <div class="card">
+          <div class="section-header">
+            <h3>工具列表</h3>
+            <div class="link-row">
+              <button class="primary" id="cli-create">新增工具</button>
+              <button class="secondary" id="refresh-cli">刷新</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <input id="cli-search" type="search" placeholder="按名称或命令过滤…" />
+            <button class="danger" id="remove-cli" disabled>删除所选</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="cli-select-all" /></th>
+                <th>名称</th>
+                <th>命令</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="cli-table-body"></tbody>
+          </table>
+          <div class="empty" id="cli-empty" hidden>暂未配置任何 CLI 工具。</div>
+        </div>
+        <div class="card">
+          <h3>执行结果</h3>
+          <div class="hint">点击“执行”按钮即可在此查看实时输出。</div>
+          <div class="log-panel" id="cli-log" aria-live="polite">等待执行…</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-claude">
+      <div class="section-header">
+        <div>
+          <h2>Claude 配置中心</h2>
+          <p>支持查看当前 profile、快速切换及新增/编辑配置。</p>
+        </div>
+        <div class="status" id="claude-status">正在加载配置…</div>
+      </div>
+      <div class="section-grid">
+        <div class="card">
+          <h3>当前配置</h3>
+          <div id="claude-current" class="grid"></div>
+        </div>
+        <div class="card">
+          <div class="section-header">
+            <h3>配置列表</h3>
+            <div class="link-row">
+              <button class="primary" id="claude-create">新增配置</button>
+              <button class="secondary" id="refresh-claude">刷新</button>
+            </div>
+          </div>
+          <input id="claude-search" type="search" placeholder="支持按名称或变量过滤…" />
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>模型</th>
+                <th>敏感变量</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="claude-table-body"></tbody>
+          </table>
+          <div class="empty" id="claude-empty" hidden>暂无 Claude 配置，点击“新增配置”录入。</div>
+        </div>
+      </div>
     </section>
   </main>
-  <div class="status-bar" id="statusBar">
-    <span id="statusMain">等待操作…</span>
-    <span id="statusDetail"></span>
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div id="modal-box" class="modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="modal-title"></h3>
+        <button type="button" id="modal-close" aria-label="关闭弹窗">&times;</button>
+      </div>
+      <div id="modal-content"></div>
+    </div>
   </div>
   <script>
     (function () {
-      const state = {
-        current: null,
-        profiles: {},
-        editing: null
+      const views = document.querySelectorAll("nav button");
+      const sections = {
+        projects: document.getElementById("view-projects"),
+        cli: document.getElementById("view-cli"),
+        claude: document.getElementById("view-claude"),
       };
 
-      const profileList = document.getElementById("profileList");
-      const refreshButton = document.getElementById("refreshButton");
-      const newProfileButton = document.getElementById("newProfileButton");
-      const form = document.getElementById("profileForm");
-      const formTitle = document.getElementById("formTitle");
-      const nameInput = document.getElementById("profileName");
-      const modelInput = document.getElementById("profileModel");
-      const envList = document.getElementById("envList");
-      const addEnvButton = document.getElementById("addEnv");
-      const setCurrentInput = document.getElementById("setCurrent");
-      const cancelButton = document.getElementById("cancelEdit");
-      const statusMain = document.getElementById("statusMain");
-      const statusDetail = document.getElementById("statusDetail");
-
-      function setStatus(message, tone) {
-        statusMain.textContent = message;
-        statusMain.className = tone === "success" ? "success" : tone === "error" ? "error" : "";
-      }
-
-      function setDetail(message, tone) {
-        statusDetail.textContent = message || "";
-        statusDetail.className = tone === "success" ? "success" : tone === "error" ? "error" : "";
-      }
-
-      function maskSensitive(key, value) {
-        if (!value) {
-          return "-";
-        }
-        const lowered = key.toLowerCase();
-        if (lowered.includes("token") || lowered.includes("secret") || lowered.includes("key")) {
-          if (value.length <= 4) {
-            return "*".repeat(value.length);
-          }
-          const head = value.slice(0, 4);
-          const tail = value.slice(-4);
-          const middle = Math.max(value.length - 8, 0);
-          return head + "*".repeat(middle) + tail;
-        }
-        return value;
-      }
-
-      function clearEnvRows() {
-        while (envList.firstChild) {
-          envList.removeChild(envList.firstChild);
-        }
-      }
-
-      function createEnvRow(key, value) {
-        const row = document.createElement("div");
-        row.className = "env-row";
-
-        const keyInput = document.createElement("input");
-        keyInput.type = "text";
-        keyInput.placeholder = "变量名";
-        keyInput.value = key || "";
-        keyInput.className = "env-key";
-
-        const valueInput = document.createElement("input");
-        valueInput.type = "text";
-        valueInput.placeholder = "变量值";
-        valueInput.value = value || "";
-        valueInput.className = "env-value";
-
-        const removeButton = document.createElement("button");
-        removeButton.type = "button";
-        removeButton.textContent = "移除";
-        removeButton.addEventListener("click", function () {
-          row.remove();
-          if (!envList.children.length) {
-            addEnvRow("", "");
-          }
+      views.forEach(function (button) {
+        button.addEventListener("click", function () {
+          views.forEach(function (item) {
+            item.classList.remove("active");
+          });
+          button.classList.add("active");
+          const target = button.getAttribute("data-view");
+          Object.keys(sections).forEach(function (key) {
+            sections[key].classList.toggle("active", key === target);
+          });
         });
+      });
 
-        row.appendChild(keyInput);
-        row.appendChild(valueInput);
-        row.appendChild(removeButton);
-        return row;
+      const modalOverlay = document.getElementById("modal-overlay");
+      const modalTitle = document.getElementById("modal-title");
+      const modalContent = document.getElementById("modal-content");
+      const modalClose = document.getElementById("modal-close");
+      const modalBox = document.getElementById("modal-box");
+      let modalCleanup = null;
+
+      function openModal(title, content, options) {
+        modalTitle.textContent = title;
+        modalContent.innerHTML = "";
+        modalContent.appendChild(content);
+        if (options && options.width) {
+          modalBox.style.width = options.width;
+        } else {
+          modalBox.style.removeProperty("width");
+        }
+        modalOverlay.hidden = false;
+        modalCleanup = options && options.onClose ? options.onClose : null;
       }
 
-      function addEnvRow(key, value) {
-        envList.appendChild(createEnvRow(key, value));
-      }
-
-      function collectEnv() {
-        const result = {};
-        const rows = envList.querySelectorAll(".env-row");
-        rows.forEach(function (row) {
-          const key = row.querySelector(".env-key").value.trim();
-          const value = row.querySelector(".env-value").value;
-          if (key) {
-            result[key] = value;
+      function closeModal() {
+        modalOverlay.hidden = true;
+        modalContent.innerHTML = "";
+        if (typeof modalCleanup === "function") {
+          try {
+            modalCleanup();
+          } catch (error) {
+            console.error(error);
           }
-        });
-        return result;
+        }
+        modalCleanup = null;
       }
 
-      function renderProfiles() {
-        profileList.innerHTML = "";
-        const names = Object.keys(state.profiles);
-        if (!names.length) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "暂无配置，使用右侧表单创建一个吧。";
-          profileList.appendChild(empty);
+      modalClose.addEventListener("click", function () {
+        closeModal();
+      });
+
+      modalOverlay.addEventListener("click", function (event) {
+        if (event.target === modalOverlay) {
+          closeModal();
+        }
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && !modalOverlay.hidden) {
+          closeModal();
+        }
+      });
+
+      function notify(element, message, tone) {
+        element.textContent = message;
+        element.className = "status" + (tone ? " " + tone : "");
+      }
+
+      async function request(path, options) {
+        const response = await fetch(path, options);
+        const data = await response.json();
+        if (!data.success) {
+          const error = new Error(data.error && data.error.message ? data.error.message : "发生未知错误");
+          if (data.error && data.error.code) {
+            error.code = data.error.code;
+          }
+          if (data.error && data.error.details) {
+            error.details = data.error.details;
+          }
+          throw error;
+        }
+        return data.data;
+      }
+
+      const store = {
+        projects: [],
+        projectFilter: "",
+        projectSelection: new Set(),
+        cli: [],
+        cliFilter: "",
+        cliSelection: new Set(),
+        claude: { current: null, configs: [] },
+        claudeFilter: "",
+      };
+
+      function getFilteredProjects() {
+        if (!store.projectFilter) {
+          return store.projects.slice();
+        }
+        const keyword = store.projectFilter.toLowerCase();
+        return store.projects.filter(function (item) {
+          return item.name.toLowerCase().includes(keyword) || item.path.toLowerCase().includes(keyword);
+        });
+      }
+
+      function getFilteredCli() {
+        if (!store.cliFilter) {
+          return store.cli.slice();
+        }
+        const keyword = store.cliFilter.toLowerCase();
+        return store.cli.filter(function (item) {
+          return item.name.toLowerCase().includes(keyword) || item.command.toLowerCase().includes(keyword);
+        });
+      }
+
+      function getFilteredClaude() {
+        if (!store.claudeFilter) {
+          return store.claude.configs.slice();
+        }
+        const keyword = store.claudeFilter.toLowerCase();
+        return store.claude.configs.filter(function (item) {
+          if (item.name.toLowerCase().includes(keyword)) {
+            return true;
+          }
+          return Object.keys(item.env).some(function (key) {
+            return key.toLowerCase().includes(keyword);
+          });
+        });
+      }
+
+      const projectStatus = document.getElementById("project-status");
+      const projectTableBody = document.getElementById("project-table-body");
+      const projectEmpty = document.getElementById("project-empty");
+      const projectSearch = document.getElementById("project-search");
+      const projectSelectAll = document.getElementById("project-select-all");
+      const projectRemove = document.getElementById("remove-projects");
+      const projectRefresh = document.getElementById("refresh-projects");
+      const projectCreate = document.getElementById("project-create");
+
+      function renderProjects() {
+        const filtered = getFilteredProjects();
+        projectTableBody.innerHTML = "";
+        if (!filtered.length) {
+          projectEmpty.hidden = false;
+          projectSelectAll.checked = false;
+          projectSelectAll.indeterminate = false;
+          projectRemove.disabled = true;
           return;
         }
-        names.sort();
-        names.forEach(function (name) {
-          const profile = state.profiles[name] || {};
-          const card = document.createElement("article");
-          card.className = "profile-card" + (state.current === name ? " current" : "");
+        projectEmpty.hidden = true;
+        filtered.forEach(function (project) {
+          const row = document.createElement("tr");
 
-          const head = document.createElement("div");
-          head.className = "profile-head";
-          const title = document.createElement("h3");
-          title.textContent = name;
-          head.appendChild(title);
-          if (state.current === name) {
-            const badge = document.createElement("span");
-            badge.className = "badge";
-            badge.textContent = "当前";
-            head.appendChild(badge);
-          }
-          card.appendChild(head);
-
-          const model = document.createElement("p");
-          model.className = "profile-meta";
-          model.textContent = profile.model ? "模型：" + profile.model : "未设置默认模型";
-          card.appendChild(model);
-
-          const env = profile.env || {};
-          const keys = Object.keys(env);
-          if (!keys.length) {
-            const placeholder = document.createElement("p");
-            placeholder.className = "profile-meta";
-            placeholder.textContent = "未配置环境变量";
-            card.appendChild(placeholder);
-          } else {
-            const list = document.createElement("ul");
-            list.className = "env-list";
-            keys.sort();
-            keys.forEach(function (key) {
-              const item = document.createElement("li");
-              item.className = "env-item";
-              const label = document.createElement("span");
-              label.textContent = key;
-              const value = document.createElement("code");
-              value.textContent = maskSensitive(key, env[key]);
-              item.appendChild(label);
-              item.appendChild(value);
-              list.appendChild(item);
-            });
-            card.appendChild(list);
-          }
-
-          const actions = document.createElement("div");
-          actions.className = "profile-actions";
-
-          const useButton = document.createElement("button");
-          useButton.type = "button";
-          useButton.className = "primary";
-          useButton.textContent = state.current === name ? "使用中" : "设为当前";
-          useButton.disabled = state.current === name;
-          useButton.addEventListener("click", function () {
-            switchCurrent(name);
+          const checkboxCell = document.createElement("td");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = store.projectSelection.has(project.id);
+          checkbox.addEventListener("change", function () {
+            if (checkbox.checked) {
+              store.projectSelection.add(project.id);
+            } else {
+              store.projectSelection.delete(project.id);
+            }
+            renderProjects();
           });
+          checkboxCell.appendChild(checkbox);
+          row.appendChild(checkboxCell);
+
+          const nameCell = document.createElement("td");
+          nameCell.textContent = project.name;
+          row.appendChild(nameCell);
+
+          const pathCell = document.createElement("td");
+          pathCell.textContent = project.displayPath;
+          pathCell.className = "mono";
+          row.appendChild(pathCell);
+
+          const statusCell = document.createElement("td");
+          statusCell.textContent = project.exists ? "可用" : "路径无效";
+          statusCell.className = project.exists ? "status success" : "status warning";
+          row.appendChild(statusCell);
+
+          const updatedCell = document.createElement("td");
+          updatedCell.textContent = project.updatedAt || "-";
+          row.appendChild(updatedCell);
+
+          const actionCell = document.createElement("td");
+          actionCell.className = "link-row";
+          const detailButton = document.createElement("button");
+          detailButton.type = "button";
+          detailButton.className = "ghost";
+          detailButton.textContent = "详情";
+          detailButton.addEventListener("click", function () {
+            showProjectDetail(project);
+          });
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "ghost";
+          deleteButton.textContent = "删除";
+          deleteButton.addEventListener("click", function () {
+            confirmProjectRemoval([project.id]);
+          });
+          actionCell.appendChild(detailButton);
+          actionCell.appendChild(deleteButton);
+          row.appendChild(actionCell);
+
+          projectTableBody.appendChild(row);
+        });
+
+        const selectedInFiltered = filtered.reduce(function (total, item) {
+          return total + (store.projectSelection.has(item.id) ? 1 : 0);
+        }, 0);
+        projectSelectAll.checked = filtered.length > 0 && selectedInFiltered === filtered.length;
+        projectSelectAll.indeterminate = selectedInFiltered > 0 && selectedInFiltered < filtered.length;
+        projectRemove.disabled = store.projectSelection.size === 0;
+      }
+
+      async function fetchProjects() {
+        notify(projectStatus, "正在加载项目…", "");
+        try {
+          const data = await request("/api/projects");
+          store.projects = data.items;
+          store.projectSelection.clear();
+          renderProjects();
+          notify(projectStatus, "已加载 " + store.projects.length + " 个项目", "success");
+        } catch (error) {
+          console.error(error);
+          notify(projectStatus, error.message || "加载失败", "error");
+        }
+      }
+
+      function createProjectForm() {
+        const form = document.createElement("form");
+        form.className = "modal-form";
+
+        const pathLabel = document.createElement("label");
+        pathLabel.textContent = "项目路径";
+        const pathInput = document.createElement("input");
+        pathInput.type = "text";
+        pathInput.placeholder = "/path/to/project";
+        pathInput.required = true;
+        pathLabel.appendChild(pathInput);
+        const pathHint = document.createElement("span");
+        pathHint.className = "hint";
+        pathHint.textContent = "需为本地存在的目录";
+        pathLabel.appendChild(pathHint);
+        form.appendChild(pathLabel);
+
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "自定义名称（可选）";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "默认为目录名";
+        nameLabel.appendChild(nameInput);
+        form.appendChild(nameLabel);
+
+        const duplicateOption = document.createElement("label");
+        duplicateOption.className = "option";
+        const duplicateInput = document.createElement("input");
+        duplicateInput.type = "checkbox";
+        duplicateOption.appendChild(duplicateInput);
+        const duplicateText = document.createElement("span");
+        duplicateText.textContent = "允许覆盖同名或同路径记录";
+        duplicateOption.appendChild(duplicateText);
+        form.appendChild(duplicateOption);
+
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "secondary";
+        cancelButton.textContent = "取消";
+        cancelButton.addEventListener("click", function () {
+          closeModal();
+        });
+        const submitButton = document.createElement("button");
+        submitButton.type = "submit";
+        submitButton.className = "primary";
+        submitButton.textContent = "保存";
+        actions.appendChild(cancelButton);
+        actions.appendChild(submitButton);
+        form.appendChild(actions);
+
+        async function submitProject(forceDuplicate) {
+          const payload = {
+            path: pathInput.value,
+            name: nameInput.value,
+            allowDuplicate: forceDuplicate === true ? true : duplicateInput.checked,
+          };
+          try {
+            await request("/api/projects", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            closeModal();
+            notify(projectStatus, "项目保存成功", "success");
+            await fetchProjects();
+          } catch (error) {
+            if (error.code === "duplicate" && !payload.allowDuplicate) {
+              if (window.confirm("发现重复记录，是否覆盖？确认后将写入新记录。")) {
+                duplicateInput.checked = true;
+                await submitProject(true);
+                return;
+              }
+            }
+            notify(projectStatus, error.message || "保存失败", "error");
+          }
+        }
+
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          submitProject(false);
+        });
+
+        openModal("新增项目", form);
+      }
+
+      async function showProjectDetail(project) {
+        notify(projectStatus, "正在加载项目详情…", "");
+        try {
+          const detail = await request("/api/projects/" + project.id);
+          const container = document.createElement("div");
+          container.className = "modal-form";
+
+          function appendItem(label, value, mono) {
+            const row = document.createElement("div");
+            const strong = document.createElement("strong");
+            strong.textContent = label + "：";
+            const span = document.createElement("span");
+            if (mono) {
+              span.className = "mono";
+            }
+            span.textContent = value;
+            row.appendChild(strong);
+            row.appendChild(span);
+            container.appendChild(row);
+          }
+
+          appendItem("名称", detail.name, false);
+          appendItem("路径", detail.displayPath, true);
+          appendItem("状态", detail.exists ? "路径有效（" + (detail.isDirectory ? "目录" : "文件") + "）" : "路径不存在", false);
+          appendItem("创建时间", detail.createdAt || "-", false);
+          appendItem("最近修改", detail.updatedAt || "-", false);
+          if (typeof detail.sizeInBytes === "number") {
+            appendItem("大小", detail.sizeInBytes + " 字节", false);
+          }
+
+          const closeButton = document.createElement("button");
+          closeButton.type = "button";
+          closeButton.className = "secondary";
+          closeButton.textContent = "关闭";
+          closeButton.addEventListener("click", function () {
+            closeModal();
+          });
+          const actions = document.createElement("div");
+          actions.className = "modal-actions";
+          actions.appendChild(closeButton);
+          container.appendChild(actions);
+
+          openModal("项目详情 - " + detail.name, container, { width: "460px" });
+          notify(projectStatus, "详情加载完成", "success");
+        } catch (error) {
+          notify(projectStatus, error.message || "加载详情失败", "error");
+        }
+      }
+
+      async function confirmProjectRemoval(ids) {
+        if (!ids.length) {
+          return;
+        }
+        if (!window.confirm("确定删除选中的项目记录吗？")) {
+          return;
+        }
+        try {
+          await request("/api/projects", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: ids }),
+          });
+          notify(projectStatus, "删除成功", "success");
+          await fetchProjects();
+        } catch (error) {
+          notify(projectStatus, error.message || "删除失败", "error");
+        }
+      }
+
+      projectSearch.addEventListener("input", function () {
+        store.projectFilter = projectSearch.value.trim();
+        renderProjects();
+      });
+
+      projectSelectAll.addEventListener("change", function () {
+        const filtered = getFilteredProjects();
+        if (projectSelectAll.checked) {
+          filtered.forEach(function (item) {
+            store.projectSelection.add(item.id);
+          });
+        } else {
+          filtered.forEach(function (item) {
+            store.projectSelection.delete(item.id);
+          });
+        }
+        renderProjects();
+      });
+
+      projectRemove.addEventListener("click", function () {
+        confirmProjectRemoval(Array.from(store.projectSelection));
+      });
+
+      projectRefresh.addEventListener("click", function () {
+        fetchProjects();
+      });
+
+      projectCreate.addEventListener("click", function () {
+        createProjectForm();
+      });
+
+      const cliStatus = document.getElementById("cli-status");
+      const cliTableBody = document.getElementById("cli-table-body");
+      const cliEmpty = document.getElementById("cli-empty");
+      const cliSearch = document.getElementById("cli-search");
+      const cliSelectAll = document.getElementById("cli-select-all");
+      const cliRemove = document.getElementById("remove-cli");
+      const cliRefresh = document.getElementById("refresh-cli");
+      const cliCreate = document.getElementById("cli-create");
+      const cliLog = document.getElementById("cli-log");
+
+      function renderCli() {
+        const filtered = getFilteredCli();
+        cliTableBody.innerHTML = "";
+        if (!filtered.length) {
+          cliEmpty.hidden = false;
+          cliSelectAll.checked = false;
+          cliSelectAll.indeterminate = false;
+          cliRemove.disabled = true;
+          return;
+        }
+        cliEmpty.hidden = true;
+        filtered.forEach(function (tool) {
+          const row = document.createElement("tr");
+
+          const checkboxCell = document.createElement("td");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = store.cliSelection.has(tool.id);
+          checkbox.addEventListener("change", function () {
+            if (checkbox.checked) {
+              store.cliSelection.add(tool.id);
+            } else {
+              store.cliSelection.delete(tool.id);
+            }
+            renderCli();
+          });
+          checkboxCell.appendChild(checkbox);
+          row.appendChild(checkboxCell);
+
+          const nameCell = document.createElement("td");
+          nameCell.textContent = tool.name;
+          row.appendChild(nameCell);
+
+          const commandCell = document.createElement("td");
+          commandCell.textContent = tool.command;
+          commandCell.className = "mono";
+          row.appendChild(commandCell);
+
+          const actionCell = document.createElement("td");
+          actionCell.className = "link-row";
+
+          const runButton = document.createElement("button");
+          runButton.type = "button";
+          runButton.className = "ghost";
+          runButton.textContent = "执行";
+          runButton.addEventListener("click", function () {
+            executeCliTool(tool.id);
+          });
+          actionCell.appendChild(runButton);
 
           const editButton = document.createElement("button");
           editButton.type = "button";
-          editButton.className = "secondary";
+          editButton.className = "ghost";
           editButton.textContent = "编辑";
           editButton.addEventListener("click", function () {
-            fillForm(name);
+            showCliForm(tool);
           });
+          actionCell.appendChild(editButton);
 
           const deleteButton = document.createElement("button");
           deleteButton.type = "button";
-          deleteButton.className = "danger";
+          deleteButton.className = "ghost";
           deleteButton.textContent = "删除";
           deleteButton.addEventListener("click", function () {
-            removeProfile(name);
+            confirmCliRemoval([tool.id]);
+          });
+          actionCell.appendChild(deleteButton);
+
+          row.appendChild(actionCell);
+          cliTableBody.appendChild(row);
+        });
+
+        const selectedInFiltered = filtered.reduce(function (total, item) {
+          return total + (store.cliSelection.has(item.id) ? 1 : 0);
+        }, 0);
+        cliSelectAll.checked = filtered.length > 0 && selectedInFiltered === filtered.length;
+        cliSelectAll.indeterminate = selectedInFiltered > 0 && selectedInFiltered < filtered.length;
+        cliRemove.disabled = store.cliSelection.size === 0;
+      }
+
+      async function fetchCliTools() {
+        notify(cliStatus, "正在加载工具…", "");
+        try {
+          const data = await request("/api/cli/tools");
+          store.cli = data.items;
+          store.cliSelection.clear();
+          renderCli();
+          notify(cliStatus, "已加载 " + store.cli.length + " 项工具", "success");
+        } catch (error) {
+          notify(cliStatus, error.message || "加载失败", "error");
+        }
+      }
+
+      function createCliForm(initial) {
+        const form = document.createElement("form");
+        form.className = "modal-form";
+
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "工具名称";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "例如：lint";
+        nameInput.required = true;
+        if (initial) {
+          nameInput.value = initial.name;
+        }
+        nameLabel.appendChild(nameInput);
+        form.appendChild(nameLabel);
+
+        const commandLabel = document.createElement("label");
+        commandLabel.textContent = "命令内容";
+        const commandInput = document.createElement("textarea");
+        commandInput.placeholder = "例如：npm run lint";
+        commandInput.required = true;
+        if (initial) {
+          commandInput.value = initial.command;
+        }
+        commandLabel.appendChild(commandInput);
+        form.appendChild(commandLabel);
+
+        const duplicateOption = document.createElement("label");
+        duplicateOption.className = "option";
+        const duplicateInput = document.createElement("input");
+        duplicateInput.type = "checkbox";
+        duplicateOption.appendChild(duplicateInput);
+        const duplicateText = document.createElement("span");
+        duplicateText.textContent = "允许覆盖同名或同命令记录";
+        duplicateOption.appendChild(duplicateText);
+        form.appendChild(duplicateOption);
+
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "secondary";
+        cancelButton.textContent = "取消";
+        cancelButton.addEventListener("click", function () {
+          closeModal();
+        });
+        const submitButton = document.createElement("button");
+        submitButton.type = "submit";
+        submitButton.className = "primary";
+        submitButton.textContent = "保存";
+        actions.appendChild(cancelButton);
+        actions.appendChild(submitButton);
+        form.appendChild(actions);
+
+        async function submitCli(forceDuplicate) {
+          const payload = {
+            name: nameInput.value,
+            command: commandInput.value,
+            allowDuplicate: forceDuplicate === true ? true : duplicateInput.checked,
+          };
+          if (initial) {
+            try {
+              await request("/api/cli/tools/" + initial.id, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              closeModal();
+              notify(cliStatus, "工具已更新", "success");
+              await fetchCliTools();
+            } catch (error) {
+              if (error.code === "duplicate" && !payload.allowDuplicate) {
+                if (window.confirm("存在重复记录，是否覆盖？")) {
+                  duplicateInput.checked = true;
+                  await submitCli(true);
+                  return;
+                }
+              }
+              notify(cliStatus, error.message || "保存失败", "error");
+            }
+          } else {
+            try {
+              await request("/api/cli/tools", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              closeModal();
+              notify(cliStatus, "工具保存成功", "success");
+              await fetchCliTools();
+            } catch (error) {
+              if (error.code === "duplicate" && !payload.allowDuplicate) {
+                if (window.confirm("存在重复记录，是否覆盖？")) {
+                  duplicateInput.checked = true;
+                  await submitCli(true);
+                  return;
+                }
+              }
+              notify(cliStatus, error.message || "保存失败", "error");
+            }
+          }
+        }
+
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          submitCli(false);
+        });
+
+        openModal(initial ? "编辑工具 - " + initial.name : "新增工具", form);
+      }
+
+      async function executeCliTool(id) {
+        notify(cliStatus, "正在执行命令…", "");
+        cliLog.textContent = "命令正在执行…";
+        try {
+          const data = await request("/api/cli/tools/" + id + "/run", { method: "POST" });
+          cliLog.textContent =
+            "退出码：" +
+            data.code +
+            "\\n\\n" +
+            (data.stdout || "<无标准输出>") +
+            (data.stderr ? "\\n\\n--- STDERR ---\\n" + data.stderr : "");
+          notify(cliStatus, data.code === 0 ? "命令执行完成" : "命令执行完成但返回非零", data.code === 0 ? "success" : "warning");
+        } catch (error) {
+          cliLog.textContent = "执行失败：" + (error.message || "未知错误");
+          notify(cliStatus, error.message || "执行失败", "error");
+        }
+      }
+
+      async function confirmCliRemoval(ids) {
+        if (!ids.length) {
+          return;
+        }
+        if (!window.confirm("确定删除选中的 CLI 工具吗？")) {
+          return;
+        }
+        try {
+          await request("/api/cli/tools", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: ids }),
+          });
+          notify(cliStatus, "删除成功", "success");
+          await fetchCliTools();
+        } catch (error) {
+          notify(cliStatus, error.message || "删除失败", "error");
+        }
+      }
+
+      cliSearch.addEventListener("input", function () {
+        store.cliFilter = cliSearch.value.trim();
+        renderCli();
+      });
+
+      cliSelectAll.addEventListener("change", function () {
+        const filtered = getFilteredCli();
+        if (cliSelectAll.checked) {
+          filtered.forEach(function (item) {
+            store.cliSelection.add(item.id);
+          });
+        } else {
+          filtered.forEach(function (item) {
+            store.cliSelection.delete(item.id);
+          });
+        }
+        renderCli();
+      });
+
+      cliRemove.addEventListener("click", function () {
+        confirmCliRemoval(Array.from(store.cliSelection));
+      });
+
+      cliRefresh.addEventListener("click", function () {
+        fetchCliTools();
+      });
+
+      cliCreate.addEventListener("click", function () {
+        createCliForm(null);
+      });
+
+      function createEnvEditor(initialEnv) {
+        const container = document.createElement("div");
+        container.className = "env-grid";
+
+        function addRow(key, value) {
+          const row = document.createElement("div");
+          row.className = "env-row";
+
+          const keyInput = document.createElement("input");
+          keyInput.type = "text";
+          keyInput.placeholder = "变量名";
+          keyInput.value = key || "";
+
+          const valueInput = document.createElement("input");
+          valueInput.type = "text";
+          valueInput.placeholder = "变量值";
+          valueInput.value = value || "";
+
+          const removeButton = document.createElement("button");
+          removeButton.type = "button";
+          removeButton.textContent = "删除";
+          removeButton.addEventListener("click", function () {
+            row.remove();
+            if (!container.querySelector(".env-row")) {
+              addRow("", "");
+            }
           });
 
-          actions.appendChild(useButton);
-          actions.appendChild(editButton);
-          actions.appendChild(deleteButton);
-          card.appendChild(actions);
+          row.appendChild(keyInput);
+          row.appendChild(valueInput);
+          row.appendChild(removeButton);
 
-          profileList.appendChild(card);
+          container.appendChild(row);
+        }
+
+        function collect() {
+          const result = {};
+          let valid = true;
+          const rows = container.querySelectorAll(".env-row");
+          rows.forEach(function (row) {
+            const inputs = row.querySelectorAll("input");
+            const key = inputs[0].value.trim();
+            const value = inputs[1].value.trim();
+            inputs[0].classList.remove("input-error");
+            inputs[1].classList.remove("input-error");
+            if (!key && !value) {
+              return;
+            }
+            if (!key || !value) {
+              valid = false;
+              inputs[0].classList.add("input-error");
+              inputs[1].classList.add("input-error");
+              return;
+            }
+            result[key] = value;
+          });
+          return { valid: valid, env: result };
+        }
+
+        const keys = Object.keys(initialEnv || {});
+        if (keys.length) {
+          keys.forEach(function (key) {
+            addRow(key, initialEnv[key]);
+          });
+        } else {
+          addRow("", "");
+        }
+
+        return {
+          container: container,
+          addRow: addRow,
+          collect: collect,
+        };
+      }
+
+      const claudeStatus = document.getElementById("claude-status");
+      const claudeCurrent = document.getElementById("claude-current");
+      const claudeTableBody = document.getElementById("claude-table-body");
+      const claudeEmpty = document.getElementById("claude-empty");
+      const claudeSearch = document.getElementById("claude-search");
+      const claudeRefresh = document.getElementById("refresh-claude");
+      const claudeCreate = document.getElementById("claude-create");
+
+      function renderCurrentClaude() {
+        claudeCurrent.innerHTML = "";
+        const current = store.claude.current;
+        if (!current) {
+          const placeholder = document.createElement("div");
+          placeholder.className = "hint";
+          placeholder.textContent = "尚未设置当前配置。";
+          claudeCurrent.appendChild(placeholder);
+          return;
+        }
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = current.name + "（当前）";
+        claudeCurrent.appendChild(badge);
+
+        const baseUrl = document.createElement("div");
+        baseUrl.innerHTML = "<strong>ANTHROPIC_BASE_URL：</strong>" + (current.env.ANTHROPIC_BASE_URL || "-");
+        claudeCurrent.appendChild(baseUrl);
+
+        const token = document.createElement("div");
+        token.innerHTML = "<strong>ANTHROPIC_AUTH_TOKEN：</strong>" + (current.maskedEnv.ANTHROPIC_AUTH_TOKEN || "-");
+        claudeCurrent.appendChild(token);
+
+        const model = document.createElement("div");
+        model.innerHTML = "<strong>model：</strong>" + (current.model || "-");
+        claudeCurrent.appendChild(model);
+      }
+
+      function renderClaudeList() {
+        const filtered = getFilteredClaude();
+        claudeTableBody.innerHTML = "";
+        if (!filtered.length) {
+          claudeEmpty.hidden = false;
+          return;
+        }
+        claudeEmpty.hidden = true;
+
+        filtered.forEach(function (profile) {
+          const row = document.createElement("tr");
+
+          const nameCell = document.createElement("td");
+          nameCell.textContent = profile.name;
+          if (profile.isCurrent) {
+            const badge = document.createElement("span");
+            badge.className = "badge";
+            badge.textContent = "当前";
+            nameCell.appendChild(document.createElement("br"));
+            nameCell.appendChild(badge);
+          }
+          row.appendChild(nameCell);
+
+          const modelCell = document.createElement("td");
+          modelCell.textContent = profile.model || "-";
+          row.appendChild(modelCell);
+
+          const envCell = document.createElement("td");
+          envCell.innerHTML =
+            Object.keys(profile.maskedEnv)
+              .map(function (key) {
+                return "<div class='mono'>" + key + ": " + profile.maskedEnv[key] + "</div>";
+              })
+              .join("") || "-";
+          row.appendChild(envCell);
+
+          const actionCell = document.createElement("td");
+          actionCell.className = "link-row";
+
+          const useButton = document.createElement("button");
+          useButton.type = "button";
+          useButton.className = "ghost";
+          useButton.textContent = "切换";
+          useButton.disabled = profile.isCurrent;
+          useButton.addEventListener("click", function () {
+            switchClaudeProfile(profile.id);
+          });
+          actionCell.appendChild(useButton);
+
+          const editButton = document.createElement("button");
+          editButton.type = "button";
+          editButton.className = "ghost";
+          editButton.textContent = "编辑";
+          editButton.addEventListener("click", function () {
+            showClaudeForm(profile.id);
+          });
+          actionCell.appendChild(editButton);
+
+          const deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "ghost";
+          deleteButton.textContent = "删除";
+          deleteButton.addEventListener("click", function () {
+            removeClaudeProfile(profile.id);
+          });
+          actionCell.appendChild(deleteButton);
+
+          row.appendChild(actionCell);
+          claudeTableBody.appendChild(row);
         });
       }
 
-      function fillForm(name) {
-        const profile = state.profiles[name];
-        if (!profile) {
-          return;
-        }
-        state.editing = name;
-        formTitle.textContent = "编辑配置 - " + name;
-        nameInput.value = name;
-        modelInput.value = profile.model || "";
-        setCurrentInput.checked = state.current === name;
-        clearEnvRows();
-        const env = profile.env || {};
-        const keys = Object.keys(env);
-        if (!keys.length) {
-          addEnvRow("", "");
-        } else {
-          keys.sort();
-          keys.forEach(function (key) {
-            addEnvRow(key, env[key]);
-          });
-        }
-        setStatus("正在编辑配置", "");
-        setDetail("保存后将立即写入配置文件", "");
-      }
-
-      function resetForm() {
-        state.editing = null;
-        formTitle.textContent = "新增配置";
-        form.reset();
-        setCurrentInput.checked = Object.keys(state.profiles).length === 0;
-        clearEnvRows();
-        addEnvRow("", "");
-        setStatus("等待操作…", "");
-        setDetail("", "");
-      }
-
-      function buildPayload() {
-        const name = nameInput.value.trim();
-        if (!name) {
-          throw new Error("配置名称不能为空");
-        }
-        const model = modelInput.value.trim();
-        const env = collectEnv();
-        const payload = {
-          name: name,
-          profile: {},
-          setCurrent: setCurrentInput.checked,
-        };
-        if (state.editing) {
-          payload.originalName = state.editing;
-        }
-        if (model) {
-          payload.profile.model = model;
-        }
-        if (Object.keys(env).length) {
-          payload.profile.env = env;
-        }
-        return payload;
-      }
-
-      function applyResponse(result) {
-        if (!result.success) {
-          throw new Error(result.message || "操作失败");
-        }
-        state.current = result.data.current;
-        state.profiles = result.data.configs || {};
-        renderProfiles();
-      }
-
-      async function loadProfiles() {
-        setStatus("正在加载配置…", "");
+      async function fetchClaude() {
+        notify(claudeStatus, "正在加载配置…", "");
         try {
-          const response = await fetch("/api/claude");
-          const result = await response.json();
-          applyResponse(result);
-          setStatus("已加载最新配置", "success");
-          setDetail("共 " + Object.keys(state.profiles).length + " 个配置", "");
-          if (!state.editing) {
-            resetForm();
+          const data = await request("/api/claude");
+          store.claude = data;
+          renderCurrentClaude();
+          renderClaudeList();
+          notify(claudeStatus, "已加载 " + store.claude.configs.length + " 个配置", "success");
+        } catch (error) {
+          notify(claudeStatus, error.message || "加载失败", "error");
+        }
+      }
+
+      async function showClaudeForm(id) {
+        notify(claudeStatus, id ? "正在加载配置…" : "正在准备新增配置…", "");
+        let profile = null;
+        if (id) {
+          try {
+            profile = await request("/api/claude/profile/" + id);
+          } catch (error) {
+            notify(claudeStatus, error.message || "加载配置失败", "error");
+            return;
           }
-        } catch (error) {
-          console.error(error);
-          setStatus("加载失败", "error");
-          setDetail(error.message, "error");
         }
+
+        const form = document.createElement("form");
+        form.className = "modal-form";
+
+        const nameLabel = document.createElement("label");
+        nameLabel.textContent = "配置名称";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "例如：work";
+        nameInput.required = true;
+        if (profile) {
+          nameInput.value = profile.name;
+        }
+        nameLabel.appendChild(nameInput);
+        form.appendChild(nameLabel);
+
+        const modelLabel = document.createElement("label");
+        modelLabel.textContent = "默认模型";
+        const modelInput = document.createElement("input");
+        modelInput.type = "text";
+        modelInput.placeholder = "例如：claude-3-sonnet";
+        if (profile && profile.model) {
+          modelInput.value = profile.model;
+        }
+        modelLabel.appendChild(modelInput);
+        form.appendChild(modelLabel);
+
+        const envLabel = document.createElement("label");
+        envLabel.textContent = "环境变量";
+        const editor = createEnvEditor(profile ? profile.env || {} : {});
+        envLabel.appendChild(editor.container);
+        const addRowButton = document.createElement("button");
+        addRowButton.type = "button";
+        addRowButton.className = "secondary";
+        addRowButton.textContent = "新增变量";
+        addRowButton.addEventListener("click", function () {
+          editor.addRow("", "");
+        });
+        envLabel.appendChild(addRowButton);
+        form.appendChild(envLabel);
+
+        const currentOption = document.createElement("label");
+        currentOption.className = "option";
+        const currentInput = document.createElement("input");
+        currentInput.type = "checkbox";
+        if (!profile && !store.claude.current) {
+          currentInput.checked = true;
+        }
+        if (profile && store.claude.current && store.claude.current.id === profile.id) {
+          currentInput.checked = true;
+        }
+        currentOption.appendChild(currentInput);
+        const currentText = document.createElement("span");
+        currentText.textContent = "保存后设为当前配置";
+        currentOption.appendChild(currentText);
+        form.appendChild(currentOption);
+
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "secondary";
+        cancelButton.textContent = "取消";
+        cancelButton.addEventListener("click", function () {
+          closeModal();
+        });
+        const submitButton = document.createElement("button");
+        submitButton.type = "submit";
+        submitButton.className = "primary";
+        submitButton.textContent = "保存";
+        actions.appendChild(cancelButton);
+        actions.appendChild(submitButton);
+        form.appendChild(actions);
+
+        form.addEventListener("submit", async function (event) {
+          event.preventDefault();
+          const result = editor.collect();
+          if (!result.valid) {
+            notify(claudeStatus, "环境变量需成对填写", "error");
+            return;
+          }
+          const payload = {
+            name: nameInput.value,
+            model: modelInput.value,
+            env: result.env,
+            setCurrent: currentInput.checked,
+            allowDuplicate: true,
+          };
+          if (profile) {
+            payload.originalId = profile.id;
+          }
+          try {
+            await request("/api/claude/profile", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            closeModal();
+            notify(claudeStatus, "保存成功", "success");
+            await fetchClaude();
+          } catch (error) {
+            notify(claudeStatus, error.message || "保存失败", "error");
+          }
+        });
+
+        openModal(profile ? "编辑配置 - " + profile.name : "新增配置", form);
       }
 
-      async function saveProfile(event) {
-        event.preventDefault();
-        let payload;
+      async function switchClaudeProfile(id) {
         try {
-          payload = buildPayload();
-        } catch (error) {
-          setStatus(error.message, "error");
-          return;
-        }
-        setStatus("正在保存配置…", "");
-        try {
-          const response = await fetch("/api/claude/profile", {
+          await request("/api/claude/current", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ id: id }),
           });
-          const result = await response.json();
-          applyResponse(result);
-          setStatus("保存成功", "success");
-          setDetail("配置已写入 ~/.acs/config.json", "success");
-          resetForm();
+          notify(claudeStatus, "切换成功，已同步至 ~/.claude/settings.json", "success");
+          await fetchClaude();
         } catch (error) {
-          console.error(error);
-          setStatus("保存失败", "error");
-          setDetail(error.message, "error");
+          notify(claudeStatus, error.message || "切换失败", "error");
         }
       }
 
-      async function switchCurrent(name) {
-        setStatus("正在切换配置…", "");
-        try {
-          const response = await fetch("/api/claude/current", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: name }),
-          });
-          const result = await response.json();
-          applyResponse(result);
-          setStatus("已切换当前配置", "success");
-          setDetail("当前配置：" + (state.current || "未设置"), "success");
-          resetForm();
-        } catch (error) {
-          console.error(error);
-          setStatus("切换失败", "error");
-          setDetail(error.message, "error");
-        }
-      }
-
-      async function removeProfile(name) {
-        if (!window.confirm("确认删除配置 " + name + " 吗？")) {
+      async function removeClaudeProfile(id) {
+        if (!window.confirm("确认删除该配置？删除后将无法恢复。")) {
           return;
         }
-        setStatus("正在删除配置…", "");
         try {
-          const response = await fetch("/api/claude/profile/" + encodeURIComponent(name), {
-            method: "DELETE",
-          });
-          const result = await response.json();
-          applyResponse(result);
-          setStatus("删除成功", "success");
-          setDetail("配置列表已更新", "success");
-          resetForm();
+          await request("/api/claude/profile/" + id, { method: "DELETE" });
+          notify(claudeStatus, "删除成功", "success");
+          await fetchClaude();
         } catch (error) {
-          console.error(error);
-          setStatus("删除失败", "error");
-          setDetail(error.message, "error");
+          notify(claudeStatus, error.message || "删除失败", "error");
         }
       }
 
-      refreshButton.addEventListener("click", loadProfiles);
-      newProfileButton.addEventListener("click", resetForm);
-      addEnvButton.addEventListener("click", function () {
-        addEnvRow("", "");
+      claudeSearch.addEventListener("input", function () {
+        store.claudeFilter = claudeSearch.value.trim();
+        renderClaudeList();
       });
-      cancelButton.addEventListener("click", resetForm);
-      form.addEventListener("submit", saveProfile);
 
-      resetForm();
-      loadProfiles();
+      claudeRefresh.addEventListener("click", function () {
+        fetchClaude();
+      });
+
+      claudeCreate.addEventListener("click", function () {
+        showClaudeForm(null);
+      });
+
+      fetchProjects();
+      fetchCliTools();
+      fetchClaude();
+      cliLog.textContent = "等待执行…";
     })();
   </script>
 </body>
 </html>`;
 
-
-interface UiResponse<T> {
-  success: boolean;
-  data: T;
-  message?: string;
+function encodeId(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
 }
 
-interface ClaudeStatePayload {
-  current: string | null;
-  configs: Record<string, ClaudeProfile>;
+function decodeId(value: string): string {
+  try {
+    return Buffer.from(value, "base64url").toString("utf8");
+  } catch {
+    return "";
+  }
 }
 
-export interface StartUiServerOptions {
-  port?: number;
-  host?: string;
-  logger?: Logger;
+function maskSensitive(key: string, value: string | undefined): string {
+  if (!value) {
+    return "-";
+  }
+  const lowered = key.toLowerCase();
+  if (
+    lowered.includes("token") ||
+    lowered.includes("secret") ||
+    lowered.includes("key")
+  ) {
+    if (value.length <= 8) {
+      return "*".repeat(value.length);
+    }
+    return `${value.slice(0, 4)}${"*".repeat(value.length - 8)}${value.slice(
+      -4
+    )}`;
+  }
+  return value;
 }
 
-function sendJson<T>(
-  res: http.ServerResponse,
-  statusCode: number,
-  payload: UiResponse<T>
-): void {
-  res.statusCode = statusCode;
+function sendJson<T>(res: http.ServerResponse, status: number, body: T): void {
+  const payload = JSON.stringify(body);
+  res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.end(JSON.stringify(payload));
+  res.end(payload);
 }
 
-function sendError(
-  res: http.ServerResponse,
-  message: string,
-  statusCode = 500
-): void {
-  sendJson(res, statusCode, {
-    success: false,
-    data: { current: null, configs: {} },
-    message,
-  });
+function sendHtml(res: http.ServerResponse, body: string): void {
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(body);
 }
 
-async function parseRequestBody(req: http.IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req
-      .on("data", (chunk) => {
-        chunks.push(Buffer.from(chunk));
-      })
-      .on("end", () => {
-        if (!chunks.length) {
-          resolve({});
-          return;
-        }
-        try {
-          const raw = Buffer.concat(chunks).toString("utf-8");
-          resolve(JSON.parse(raw));
-        } catch (error) {
-          reject(new Error("Invalid JSON body"));
-        }
-      })
-      .on("error", (error) => {
-        reject(error);
-      });
-  });
+async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of req) {
+    if (typeof chunk === "string") {
+      chunks.push(TEXT_ENCODER.encode(chunk));
+    } else {
+      chunks.push(chunk);
+    }
+  }
+  if (!chunks.length) {
+    return {};
+  }
+  const buffer = Buffer.concat(chunks);
+  try {
+    return JSON.parse(buffer.toString("utf8"));
+  } catch {
+    throw new Error("INVALID_JSON");
+  }
 }
 
-function normalizeClaudeConfig(config: AcsConfig): ClaudeConfig {
-  const provider = config.config ?? {};
-  if (!provider.claude) {
-    return { configs: {}, current: undefined };
+function ensureClaudeConfig(config: AcsConfig): ClaudeConfig {
+  const claude = config.config?.claude ?? { current: undefined, configs: {} };
+  if (!config.config) {
+    config.config = { claude };
+  } else if (!config.config.claude) {
+    config.config.claude = claude;
+  }
+  if (!claude.configs) {
+    claude.configs = {};
+  }
+  return claude;
+}
+
+function buildProjectView(project: Project): ProjectView {
+  const id = encodeId(project.path);
+  const displayPath = formatPathForDisplay(project.path);
+  let exists = false;
+  let isDirectory = false;
+  let createdAt: string | undefined;
+  let updatedAt: string | undefined;
+  try {
+    const stats = fs.statSync(project.path);
+    exists = true;
+    isDirectory = stats.isDirectory();
+    createdAt = stats.birthtime.toISOString();
+    updatedAt = stats.mtime.toISOString();
+  } catch {
+    exists = false;
   }
   return {
-    current: provider.claude.current,
-    configs: provider.claude.configs ?? {},
+    ...project,
+    id,
+    displayPath,
+    exists,
+    isDirectory,
+    createdAt,
+    updatedAt,
   };
 }
 
-function readClaudeState(): ClaudeStatePayload {
-  const config = readConfig();
-  const claude = normalizeClaudeConfig(config);
+function buildProjectDetail(project: Project): ProjectDetailView {
+  const view = buildProjectView(project);
+  try {
+    const stats = fs.statSync(project.path);
+    view.sizeInBytes = stats.size;
+  } catch {
+    // ignore
+  }
+  return view;
+}
+
+function buildCliView(tool: CliTool): CliToolView {
   return {
-    current: claude.current ?? null,
-    configs: claude.configs,
+    ...tool,
+    id: encodeId(tool.name),
   };
 }
 
-function sanitizeProfile(input: unknown): ClaudeProfile {
-  const profile: ClaudeProfile = {};
-  if (!input || typeof input !== "object") {
-    return profile;
+function buildClaudeProfileView(
+  claude: ClaudeConfig,
+  [name, profile]: [string, ClaudeProfile]
+): ClaudeProfileView {
+  const env = profile.env ?? {};
+  const maskedEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    maskedEnv[key] = maskSensitive(key, value);
   }
-  const record = input as Record<string, unknown>;
-  if (typeof record.model === "string" && record.model.trim()) {
-    profile.model = record.model.trim();
+  return {
+    id: encodeId(name),
+    name,
+    model: profile.model,
+    env,
+    maskedEnv,
+    isCurrent: claude.current === name,
+  };
+}
+
+function sanitizeEnv(input: Record<string, unknown> | undefined): Record<
+  string,
+  string
+> {
+  if (!input) {
+    return {};
   }
-  if (record.env && typeof record.env === "object") {
-    const envInput = record.env as Record<string, unknown>;
-    const env: Record<string, string> = {};
-    Object.entries(envInput).forEach(([key, value]) => {
-      if (typeof key !== "string") {
-        return;
-      }
-      const trimmedKey = key.trim();
-      if (!trimmedKey) {
-        return;
-      }
-      if (typeof value === "string") {
-        env[trimmedKey] = value;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof key !== "string") {
+      continue;
+    }
+    const trimmedKey = key.trim();
+    if (!trimmedKey) {
+      continue;
+    }
+    if (typeof value !== "string") {
+      continue;
+    }
+    result[trimmedKey] = value.trim();
+  }
+  return result;
+}
+
+async function runShellCommand(command: string): Promise<{
+  stdout: string;
+  stderr: string;
+  code: number;
+}> {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      shell: true,
+      env: process.env,
+      cwd: process.cwd(),
+    });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > MAX_COMMAND_OUTPUT) {
+        stdout = stdout.slice(-MAX_COMMAND_OUTPUT);
       }
     });
-    if (Object.keys(env).length) {
-      profile.env = env;
-    }
-  }
-  return profile;
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > MAX_COMMAND_OUTPUT) {
+        stderr = stderr.slice(-MAX_COMMAND_OUTPUT);
+      }
+    });
+
+    child.on("close", (code) => {
+      resolve({
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        code: code ?? -1,
+      });
+    });
+
+    child.on("error", (error) => {
+      resolve({
+        stdout: stdout.trim(),
+        stderr: (error as Error).message,
+        code: -1,
+      });
+    });
+  });
 }
 
-function writeClaudeState(
-  updater: (config: AcsConfig, claude: ClaudeConfig) => ClaudeConfig | null,
-  logger?: Logger
-): ClaudeStatePayload {
-  const currentConfig = readConfig();
-  const claude = normalizeClaudeConfig(currentConfig);
-  const nextClaude = updater(currentConfig, claude);
-
-  if (nextClaude === null) {
-    const cleared: AcsConfig = {
-      ...currentConfig,
-      config: { ...currentConfig.config },
-    };
-    delete cleared.config.claude;
-    writeConfig(cleared);
-    return { current: null, configs: {} };
-  }
-
-  const nextConfig: AcsConfig = {
-    ...currentConfig,
-    config: {
-      ...currentConfig.config,
-      claude: {
-        current: nextClaude.current,
-        configs: nextClaude.configs,
-      },
-    },
-  };
-
-  writeConfig(nextConfig);
-
-  if (nextClaude.current) {
-    const profile = nextClaude.configs[nextClaude.current];
-    if (profile) {
-      try {
-        applyClaudeProfileToSettings(profile);
-      } catch (error) {
-        logger?.warn(`同步 Claude 设置文件失败: ${(error as Error).message}`);
-      }
-    }
-  }
-
-  return {
-    current: nextClaude.current ?? null,
-    configs: nextClaude.configs,
-  };
-}
-
-function createRequestListener(logger?: Logger): http.RequestListener {
-  return async (req, res) => {
-    if (!req.url) {
-      sendError(res, "缺少请求地址");
-      return;
-    }
-
-    const origin = `http://${req.headers.host ?? "localhost"}`;
-    const url = new URL(req.url, origin);
-
-    if (req.method === "OPTIONS") {
-      res.statusCode = 204;
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader(
-        "Access-Control-Allow-Methods",
-        "GET,POST,DELETE,OPTIONS"
-      );
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      res.end();
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/") {
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.end(UI_HTML);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/claude") {
-      try {
-        const data = readClaudeState();
-        sendJson(res, 200, { success: true, data });
-      } catch (error) {
-        logger?.error(`读取配置失败: ${(error as Error).message}`);
-        sendError(res, "读取配置失败", 500);
-      }
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/claude/profile") {
-      try {
-        const body = (await parseRequestBody(req)) as Record<string, unknown>;
-        const name = typeof body.name === "string" ? body.name.trim() : "";
-        if (!name) {
-          sendError(res, "配置名称不能为空", 400);
-          return;
-        }
-        const setCurrent = body.setCurrent === true;
-        const originalName =
-          typeof body.originalName === "string"
-            ? body.originalName.trim()
-            : undefined;
-        const sanitized = sanitizeProfile(body.profile);
-        const data = writeClaudeState((config, claude) => {
-          const configs = { ...claude.configs };
-          if (originalName && originalName !== name) {
-            delete configs[originalName];
-          }
-          configs[name] = sanitized;
-          let nextCurrent = claude.current;
-          if (!nextCurrent || nextCurrent === originalName) {
-            nextCurrent = name;
-          }
-          if (setCurrent) {
-            nextCurrent = name;
-          }
-          return {
-            current: nextCurrent,
-            configs,
-          };
-        }, logger);
-        sendJson(res, 200, { success: true, data });
-      } catch (error) {
-        logger?.error(`保存配置失败: ${(error as Error).message}`);
-        sendError(res, "保存配置失败", 500);
-      }
-      return;
-    }
-
-    if (req.method === "DELETE" && url.pathname.startsWith("/api/claude/profile/")) {
-      const encoded = url.pathname.slice("/api/claude/profile/".length);
-      const name = decodeURIComponent(encoded);
-      if (!name) {
-        sendError(res, "配置名称不能为空", 400);
+function createRequestListener(logger?: Logger) {
+  return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    try {
+      if (!req.url) {
+        sendJson(res, 400, {
+          success: false,
+          error: { message: "请求无效" },
+        } satisfies JsonError);
         return;
       }
-      try {
-        const data = writeClaudeState((config, claude) => {
-          if (!claude.configs[name]) {
-            throw new Error("NOT_FOUND");
-          }
-          const configs = { ...claude.configs };
-          delete configs[name];
-          const remaining = Object.keys(configs);
-          if (!remaining.length) {
-            return null;
-          }
-          let nextCurrent = claude.current;
-          if (nextCurrent === name) {
-            nextCurrent = remaining[0];
-          }
-          return {
-            current: nextCurrent,
-            configs,
-          };
-        }, logger);
-        sendJson(res, 200, { success: true, data });
-      } catch (error) {
-        if ((error as Error).message === "NOT_FOUND") {
-          sendError(res, "未找到指定配置", 404);
-        } else {
-          logger?.error(`删除配置失败: ${(error as Error).message}`);
-          sendError(res, "删除配置失败", 500);
-        }
-      }
-      return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/claude/current") {
-      try {
-        const body = (await parseRequestBody(req)) as Record<string, unknown>;
-        const name = typeof body.name === "string" ? body.name.trim() : "";
-        if (!name) {
-          sendError(res, "配置名称不能为空", 400);
+      const url = new URL(req.url, "http://localhost");
+      if (req.method === "GET" && url.pathname === "/") {
+        sendHtml(res, UI_HTML);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/projects") {
+        const config = readConfig();
+        const keyword = url.searchParams.get("q")?.toLowerCase() ?? "";
+        let items = config.projects.map(buildProjectView);
+        if (keyword) {
+          items = items.filter(
+            (item) =>
+              item.name.toLowerCase().includes(keyword) ||
+              item.path.toLowerCase().includes(keyword)
+          );
+        }
+        const response: JsonResponse<{ items: ProjectView[] }> = {
+          success: true,
+          data: { items },
+        };
+        sendJson(res, 200, response);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/api/projects/")) {
+        const id = url.pathname.slice("/api/projects/".length);
+        const pathValue = decodeId(id);
+        if (!pathValue) {
+          sendJson(res, 400, {
+            success: false,
+            error: { message: "项目标识无效" },
+          });
           return;
         }
-        const data = writeClaudeState((config, claude) => {
-          if (!claude.configs[name]) {
-            throw new Error("NOT_FOUND");
-          }
-          return {
-            current: name,
-            configs: { ...claude.configs },
-          };
-        }, logger);
-        sendJson(res, 200, { success: true, data });
-      } catch (error) {
-        if ((error as Error).message === "NOT_FOUND") {
-          sendError(res, "未找到指定配置", 404);
-        } else {
-          logger?.error(`切换配置失败: ${(error as Error).message}`);
-          sendError(res, "切换配置失败", 500);
+        const config = readConfig();
+        const project = config.projects.find(
+          (item) => item.path === pathValue
+        );
+        if (!project) {
+          sendJson(res, 404, {
+            success: false,
+            error: { message: "未找到项目" },
+          });
+          return;
         }
+        const detail = buildProjectDetail(project);
+        sendJson(res, 200, { success: true, data: detail });
+        return;
       }
-      return;
-    }
 
-    sendError(res, "未找到对应接口", 404);
+      if (req.method === "POST" && url.pathname === "/api/projects") {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const inputPath =
+            typeof body.path === "string" ? body.path.trim() : "";
+          if (!inputPath) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "项目路径不能为空" },
+            });
+            return;
+          }
+          const normalizedPath = normalizePath(inputPath);
+          if (!fs.existsSync(normalizedPath)) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "目标路径不存在" },
+            });
+            return;
+          }
+          if (!fs.statSync(normalizedPath).isDirectory()) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "目标路径不是目录" },
+            });
+            return;
+          }
+
+          const providedName =
+            typeof body.name === "string" ? body.name.trim() : "";
+          const projectName =
+            providedName || path.basename(normalizedPath) || "project";
+          const allowDuplicate = body.allowDuplicate === true;
+
+          const config = readConfig();
+          const nameDup = config.projects.find(
+            (item) => item.name === projectName
+          );
+          const pathDup = config.projects.find(
+            (item) => item.path === normalizedPath
+          );
+          if ((nameDup || pathDup) && !allowDuplicate) {
+            sendJson(res, 409, {
+              success: false,
+              error: {
+                message: "已存在同名或同路径项目",
+                code: "duplicate",
+                details: {
+                  duplicateName: !!nameDup,
+                  duplicatePath: !!pathDup,
+                },
+              },
+            });
+            return;
+          }
+
+          const nextProjects = config.projects.filter(
+            (item) =>
+              item.name !== projectName && item.path !== normalizedPath
+          );
+          nextProjects.push({
+            name: projectName,
+            path: normalizedPath,
+          });
+
+          writeConfig({
+            ...config,
+            projects: nextProjects,
+          });
+          sendJson(res, 200, { success: true, data: { ok: true } });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`保存项目失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "保存项目失败" },
+          });
+        }
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname === "/api/projects") {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const ids = Array.isArray(body.ids) ? body.ids : [];
+          const decoded = ids
+            .map((item) => (typeof item === "string" ? decodeId(item) : ""))
+            .filter(Boolean);
+          if (!decoded.length) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "缺少有效的项目标识" },
+            });
+            return;
+          }
+          const config = readConfig();
+          const nextProjects = config.projects.filter(
+            (item) => !decoded.includes(item.path)
+          );
+          writeConfig({ ...config, projects: nextProjects });
+          sendJson(res, 200, {
+            success: true,
+            data: { removed: decoded.length },
+          });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`删除项目失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "删除项目失败" },
+          });
+        }
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/cli/tools") {
+        const config = readConfig();
+        const items = config.cli.map(buildCliView);
+        sendJson(res, 200, { success: true, data: { items } });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/cli/tools") {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const name =
+            typeof body.name === "string" ? body.name.trim() : "";
+          const command =
+            typeof body.command === "string" ? body.command.trim() : "";
+          const allowDuplicate = body.allowDuplicate === true;
+          if (!name || !command) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "名称和命令不能为空" },
+            });
+            return;
+          }
+          const config = readConfig();
+          const sameName = config.cli.find((item) => item.name === name);
+          const sameCommand = config.cli.find(
+            (item) => item.command === command
+          );
+          if ((sameName || sameCommand) && !allowDuplicate) {
+            sendJson(res, 409, {
+              success: false,
+              error: { message: "存在同名或同命令工具", code: "duplicate" },
+            });
+            return;
+          }
+          const nextCli = config.cli.filter(
+            (item) => item.name !== name && item.command !== command
+          );
+          nextCli.push({ name, command });
+          writeConfig({ ...config, cli: nextCli });
+          sendJson(res, 200, { success: true, data: { ok: true } });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`保存 CLI 工具失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "保存工具失败" },
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === "PUT" &&
+        url.pathname.startsWith("/api/cli/tools/")
+      ) {
+        try {
+          const id = url.pathname.slice("/api/cli/tools/".length);
+          const originalName = decodeId(id);
+          if (!originalName) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "工具标识无效" },
+            });
+            return;
+          }
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const name =
+            typeof body.name === "string" ? body.name.trim() : "";
+          const command =
+            typeof body.command === "string" ? body.command.trim() : "";
+          const allowDuplicate = body.allowDuplicate === true;
+          if (!name || !command) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "名称和命令不能为空" },
+            });
+            return;
+          }
+          const config = readConfig();
+          const exists = config.cli.find(
+            (item) => item.name === originalName
+          );
+          if (!exists) {
+            sendJson(res, 404, {
+              success: false,
+              error: { message: "未找到目标工具" },
+            });
+            return;
+          }
+          const conflict = config.cli.find(
+            (item) =>
+              (item.name === name || item.command === command) &&
+              item.name !== originalName
+          );
+          if (conflict && !allowDuplicate) {
+            sendJson(res, 409, {
+              success: false,
+              error: { message: "存在同名或同命令工具", code: "duplicate" },
+            });
+            return;
+          }
+          const nextCli = config.cli
+            .filter((item) => item.name !== originalName)
+            .filter(
+              (item) => item.name !== name || item.command !== command
+            );
+          nextCli.push({ name, command });
+          writeConfig({ ...config, cli: nextCli });
+          sendJson(res, 200, { success: true, data: { ok: true } });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`更新 CLI 工具失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "更新工具失败" },
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === "DELETE" &&
+        url.pathname === "/api/cli/tools"
+      ) {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const ids = Array.isArray(body.ids) ? body.ids : [];
+          const names = ids
+            .map((item) => (typeof item === "string" ? decodeId(item) : ""))
+            .filter(Boolean);
+          if (!names.length) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "缺少有效工具标识" },
+            });
+            return;
+          }
+          const config = readConfig();
+          const nextCli = config.cli.filter(
+            (item) => !names.includes(item.name)
+          );
+          writeConfig({ ...config, cli: nextCli });
+          sendJson(res, 200, {
+            success: true,
+            data: { removed: names.length },
+          });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`删除 CLI 工具失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "删除工具失败" },
+          });
+        }
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        url.pathname.startsWith("/api/cli/tools/") &&
+        url.pathname.endsWith("/run")
+      ) {
+        const id = url.pathname.slice("/api/cli/tools/".length, -"/run".length);
+        const name = decodeId(id);
+        if (!name) {
+          sendJson(res, 400, {
+            success: false,
+            error: { message: "工具标识无效" },
+          });
+          return;
+        }
+        const config = readConfig();
+        const tool = config.cli.find((item) => item.name === name);
+        if (!tool) {
+          sendJson(res, 404, {
+            success: false,
+            error: { message: "未找到目标工具" },
+          });
+          return;
+        }
+        const result = await runShellCommand(tool.command);
+        sendJson(res, 200, { success: true, data: result });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/claude") {
+        const config = readConfig();
+        const claude = ensureClaudeConfig(config);
+        const profiles = Object.entries(claude.configs ?? {});
+        const items = profiles
+          .map((entry) => buildClaudeProfileView(claude, entry))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const current =
+          claude.current && claude.configs[claude.current]
+            ? buildClaudeProfileView(claude, [
+                claude.current,
+                claude.configs[claude.current],
+              ])
+            : null;
+        sendJson(res, 200, {
+          success: true,
+          data: {
+            current,
+            configs: items,
+          },
+        });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
+        url.pathname.startsWith("/api/claude/profile/")
+      ) {
+        const id = url.pathname.slice("/api/claude/profile/".length);
+        const name = decodeId(id);
+        if (!name) {
+          sendJson(res, 400, {
+            success: false,
+            error: { message: "配置标识无效" },
+          });
+          return;
+        }
+        const config = readConfig();
+        const claude = ensureClaudeConfig(config);
+        const profile = claude.configs[name];
+        if (!profile) {
+          sendJson(res, 404, {
+            success: false,
+            error: { message: "未找到配置" },
+          });
+          return;
+        }
+        sendJson(res, 200, {
+          success: true,
+          data: {
+            id,
+            name,
+            model: profile.model,
+            env: profile.env ?? {},
+          },
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/claude/profile") {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const name =
+            typeof body.name === "string" ? body.name.trim() : "";
+          if (!name) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "配置名称不能为空" },
+            });
+            return;
+          }
+          const model =
+            typeof body.model === "string" ? body.model.trim() : undefined;
+          const env = sanitizeEnv(
+            body.env && typeof body.env === "object"
+              ? (body.env as Record<string, unknown>)
+              : {}
+          );
+          const setCurrent = body.setCurrent === true;
+          const originalId =
+            typeof body.originalId === "string" ? body.originalId : undefined;
+          const originalName = originalId ? decodeId(originalId) : undefined;
+
+          const config = readConfig();
+          const claude = ensureClaudeConfig(config);
+          const nextConfigs: Record<string, ClaudeProfile> = {
+            ...claude.configs,
+          };
+          if (originalName && originalName !== name) {
+            delete nextConfigs[originalName];
+          }
+          nextConfigs[name] = {
+            ...claude.configs[name],
+            env: Object.keys(env).length ? env : undefined,
+            model: model || undefined,
+          };
+
+          const next: AcsConfig = {
+            ...config,
+            config: {
+              ...config.config,
+              claude: {
+                current: claude.current,
+                configs: nextConfigs,
+              },
+            },
+          };
+          if (!next.config.claude.current || setCurrent) {
+            next.config.claude.current = name;
+            const profile = next.config.claude.configs[name];
+            applyClaudeProfileToSettings(profile);
+          }
+          writeConfig(next);
+          sendJson(res, 200, { success: true, data: { ok: true } });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`保存 Claude 配置失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "保存配置失败" },
+          });
+        }
+        return;
+      }
+
+      if (req.method === "DELETE" && url.pathname.startsWith("/api/claude/profile/")) {
+        const id = url.pathname.slice("/api/claude/profile/".length);
+        const name = decodeId(id);
+        if (!name) {
+          sendJson(res, 400, {
+            success: false,
+            error: { message: "配置标识无效" },
+          });
+          return;
+        }
+        const config = readConfig();
+        const claude = ensureClaudeConfig(config);
+        if (!claude.configs[name]) {
+          sendJson(res, 404, {
+            success: false,
+            error: { message: "未找到配置" },
+          });
+          return;
+        }
+        const nextConfigs = { ...claude.configs };
+        delete nextConfigs[name];
+        let nextCurrent = claude.current;
+        if (nextCurrent === name) {
+          nextCurrent = Object.keys(nextConfigs)[0];
+          if (nextCurrent) {
+            applyClaudeProfileToSettings(nextConfigs[nextCurrent]);
+          }
+        }
+        writeConfig({
+          ...config,
+          config: {
+            ...config.config,
+            claude: {
+              current: nextCurrent,
+              configs: nextConfigs,
+            },
+          },
+        });
+        sendJson(res, 200, { success: true, data: { ok: true } });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/claude/current") {
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown>;
+          const id =
+            typeof body.id === "string" ? body.id : undefined;
+          const name = id ? decodeId(id) : undefined;
+          if (!name) {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "缺少配置名称" },
+            });
+            return;
+          }
+          const config = readConfig();
+          const claude = ensureClaudeConfig(config);
+          const profile = claude.configs[name];
+          if (!profile) {
+            sendJson(res, 404, {
+              success: false,
+              error: { message: "未找到配置" },
+            });
+            return;
+          }
+          applyClaudeProfileToSettings(profile);
+          const next = {
+            ...config,
+            config: {
+              ...config.config,
+              claude: {
+                current: name,
+                configs: { ...claude.configs },
+              },
+            },
+          };
+          writeConfig(next);
+          sendJson(res, 200, {
+            success: true,
+            data: { ok: true, settings: true },
+          });
+        } catch (error) {
+          if ((error as Error).message === "INVALID_JSON") {
+            sendJson(res, 400, {
+              success: false,
+              error: { message: "请求体不是合法 JSON" },
+            });
+            return;
+          }
+          logger?.error(`切换 Claude 配置失败: ${(error as Error).message}`);
+          sendJson(res, 500, {
+            success: false,
+            error: { message: "切换配置失败" },
+          });
+        }
+        return;
+      }
+
+      sendJson(res, 404, {
+        success: false,
+        error: { message: "接口未定义" },
+      });
+    } catch (error) {
+      logger?.error(`UI 服务异常: ${(error as Error).message}`);
+      sendJson(res, 500, {
+        success: false,
+        error: { message: "内部错误" },
+      });
+    }
   };
+}
+
+function listenAsync(
+  server: http.Server,
+  port: number,
+  host?: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handleError = (error: unknown) => {
+      server.off("error", handleError);
+      reject(error);
+    };
+    server.once("error", handleError);
+    if (host) {
+      server.listen(port, host, () => {
+        server.off("error", handleError);
+        resolve();
+      });
+    } else {
+      server.listen(port, () => {
+        server.off("error", handleError);
+        resolve();
+      });
+    }
+  });
+}
+
+function isPermissionError(error: unknown): boolean {
+  const err = error as NodeJS.ErrnoException;
+  return err?.code === "EACCES" || err?.code === "EPERM";
 }
 
 export async function startUiServer(
@@ -1073,26 +2624,32 @@ export async function startUiServer(
   url: string;
   port: number;
 }> {
+  const initialHost = options.host ?? DEFAULT_UI_HOST;
   const port = options.port ?? DEFAULT_UI_PORT;
-  const host = options.host ?? "127.0.0.1";
+  const listener = createRequestListener(options.logger);
+  let host = initialHost;
+  let server = http.createServer(listener);
 
-  const server = http.createServer(createRequestListener(options.logger));
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", (error) => {
-      reject(error);
-    });
-    server.listen(port, host, () => {
-      resolve();
-    });
-  });
+  try {
+    await listenAsync(server, port, host);
+  } catch (error) {
+    if (!options.host && isPermissionError(error)) {
+      server.close();
+      server = http.createServer(listener);
+      host = "0.0.0.0";
+      await listenAsync(server, port, host);
+    } else {
+      throw error;
+    }
+  }
 
   const address = server.address();
   const actualPort =
-    typeof address === "object" && address && "port" in address
-      ? address.port
-      : port;
-  const url = `http://${host}:${actualPort}`;
-  return { server, url, port: actualPort };
+    typeof address === "object" && address ? address.port : port;
+  const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+  return {
+    server,
+    url: `http://${displayHost}:${actualPort}`,
+    port: actualPort,
+  };
 }
-
