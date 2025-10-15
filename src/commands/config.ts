@@ -1,5 +1,3 @@
-import os from "node:os";
-import path from "node:path";
 import { bold, cyan, gray, green } from "colorette";
 import { readConfig, writeConfig } from "../config";
 import {
@@ -8,26 +6,9 @@ import {
   CommandResult,
   ClaudeProfile,
 } from "../types";
-import { readJsonFileSync, writeJsonFileSync } from "../utils/fs";
+import { applyClaudeProfileToSettings } from "../utils/claude";
 
 const CLAUDE_PROVIDER = "claude";
-const CLAUDE_SETTINGS_DIR = ".claude";
-const CLAUDE_SETTINGS_FILE = "settings.json";
-
-interface ClaudeSettingsFile {
-  env?: Record<string, string>;
-  model?: string;
-  [key: string]: unknown;
-}
-
-function resolveClaudeSettingsPath(): string {
-  return path.join(
-    os.homedir(),
-    CLAUDE_SETTINGS_DIR,
-    CLAUDE_SETTINGS_FILE
-  );
-}
-
 function maskToken(input?: string): string {
   if (!input) {
     return "-";
@@ -128,32 +109,6 @@ async function handleClaudeList(
   return { code: 0 };
 }
 
-function applyProfileToSettings(
-  profile: ClaudeProfile,
-  context: CommandContext
-): string {
-  const settingsPath = resolveClaudeSettingsPath();
-  const currentSettings =
-    readJsonFileSync<ClaudeSettingsFile>(settingsPath) ?? {};
-  const nextSettings: ClaudeSettingsFile = { ...currentSettings };
-
-  if (profile.env) {
-    nextSettings.env = profile.env;
-  }
-
-  if (profile.model) {
-    nextSettings.model = profile.model;
-  }
-
-  writeJsonFileSync(settingsPath, nextSettings);
-  if (context.verbose) {
-    context.logger.debug(
-      context.t("config.claude.use.settingsPath", { path: settingsPath })
-    );
-  }
-  return settingsPath;
-}
-
 async function handleClaudeUse(
   profileName: string | undefined,
   context: CommandContext
@@ -177,7 +132,12 @@ async function handleClaudeUse(
     return { code: 1 };
   }
 
-  applyProfileToSettings(profile, context);
+  const settingsPath = applyClaudeProfileToSettings(profile);
+  if (context.verbose) {
+    context.logger.debug(
+      context.t("config.claude.use.settingsPath", { path: settingsPath })
+    );
+  }
 
   const nextConfig = {
     ...config,

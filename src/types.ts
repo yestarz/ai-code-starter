@@ -20,7 +20,7 @@ export interface ClaudeProfile {
 }
 
 export interface ClaudeConfig {
-  current: string;
+  current?: string;
   configs: Record<string, ClaudeProfile>;
 }
 

@@ -17,6 +17,7 @@ import { runAdd } from "./commands/add";
 import { runLang } from "./commands/lang";
 import { runConfig } from "./commands/config";
 import { runCli } from "./commands/cli";
+import { runUi } from "./commands/ui";
 import { readConfig, ConfigError, type ConfigErrorIssue } from "./config";
 import {
   createTranslator,
@@ -74,6 +75,12 @@ const commandDefinitions: CommandDefinition[] = [
     aliases: [],
     descriptionKey: "command.config.description",
     handler: runConfig,
+  },
+  {
+    name: "ui",
+    aliases: [],
+    descriptionKey: "command.ui.description",
+    handler: runUi,
   },
 ];
 
