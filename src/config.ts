@@ -39,13 +39,20 @@ const claudeProfileSchema = z
   })
   .passthrough();
 
-const claudeConfigSchema = z.object({
-  current: z.string().min(1, "errors.claude.currentRequired"),
-  configs: z.record(
-    z.string().min(1, "errors.claude.profileNameRequired"),
-    claudeProfileSchema
-  ),
-});
+const claudeConfigSchema = z
+  .object({
+    current: z.string().min(1, "errors.claude.currentRequired").optional(),
+    configs: z
+      .record(
+        z.string().min(1, "errors.claude.profileNameRequired"),
+        claudeProfileSchema
+      )
+      .default({}),
+  })
+  .transform((value) => ({
+    current: value.current,
+    configs: value.configs ?? {},
+  }));
 
 const providerConfigSchema = z
   .object({
