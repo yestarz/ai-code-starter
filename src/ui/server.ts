@@ -2,7 +2,6 @@ import http from "node:http";
 import { URL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { readConfig, writeConfig } from "../config";
 import {
   AcsConfig,
@@ -66,7 +65,6 @@ interface ClaudeProfileView {
   isCurrent: boolean;
 }
 
-const MAX_COMMAND_OUTPUT = 50_000;
 const TEXT_ENCODER = new TextEncoder();
 
 const UI_HTML = `<!DOCTYPE html>
@@ -581,7 +579,7 @@ const UI_HTML = `<!DOCTYPE html>
       <div class="section-header">
         <div>
           <h2>CLI 工具管理</h2>
-          <p>集中存储脚本命令，可一键执行并查看日志输出。</p>
+          <p>集中存储脚本命令，便于统一维护与引用。</p>
         </div>
         <div class="status" id="cli-status">正在加载工具…</div>
       </div>
@@ -610,11 +608,6 @@ const UI_HTML = `<!DOCTYPE html>
             <tbody id="cli-table-body"></tbody>
           </table>
           <div class="empty" id="cli-empty" hidden>暂未配置任何 CLI 工具。</div>
-        </div>
-        <div class="card">
-          <h3>执行结果</h3>
-          <div class="hint">点击“执行”按钮即可在此查看实时输出。</div>
-          <div class="log-panel" id="cli-log" aria-live="polite">等待执行…</div>
         </div>
       </div>
     </section>
@@ -1100,7 +1093,6 @@ const UI_HTML = `<!DOCTYPE html>
       const cliRemove = document.getElementById("remove-cli");
       const cliRefresh = document.getElementById("refresh-cli");
       const cliCreate = document.getElementById("cli-create");
-      const cliLog = document.getElementById("cli-log");
 
       function renderCli() {
         const filtered = getFilteredCli();
@@ -1143,21 +1135,12 @@ const UI_HTML = `<!DOCTYPE html>
           const actionCell = document.createElement("td");
           actionCell.className = "link-row";
 
-          const runButton = document.createElement("button");
-          runButton.type = "button";
-          runButton.className = "ghost";
-          runButton.textContent = "执行";
-          runButton.addEventListener("click", function () {
-            executeCliTool(tool.id);
-          });
-          actionCell.appendChild(runButton);
-
           const editButton = document.createElement("button");
           editButton.type = "button";
           editButton.className = "ghost";
           editButton.textContent = "编辑";
           editButton.addEventListener("click", function () {
-            showCliForm(tool);
+            createCliForm(tool);
           });
           actionCell.appendChild(editButton);
 
@@ -1304,24 +1287,6 @@ const UI_HTML = `<!DOCTYPE html>
         });
 
         openModal(initial ? "编辑工具 - " + initial.name : "新增工具", form);
-      }
-
-      async function executeCliTool(id) {
-        notify(cliStatus, "正在执行命令…", "");
-        cliLog.textContent = "命令正在执行…";
-        try {
-          const data = await request("/api/cli/tools/" + id + "/run", { method: "POST" });
-          cliLog.textContent =
-            "退出码：" +
-            data.code +
-            "\\n\\n" +
-            (data.stdout || "<无标准输出>") +
-            (data.stderr ? "\\n\\n--- STDERR ---\\n" + data.stderr : "");
-          notify(cliStatus, data.code === 0 ? "命令执行完成" : "命令执行完成但返回非零", data.code === 0 ? "success" : "warning");
-        } catch (error) {
-          cliLog.textContent = "执行失败：" + (error.message || "未知错误");
-          notify(cliStatus, error.message || "执行失败", "error");
-        }
       }
 
       async function confirmCliRemoval(ids) {
@@ -1733,7 +1698,6 @@ const UI_HTML = `<!DOCTYPE html>
       fetchProjects();
       fetchCliTools();
       fetchClaude();
-      cliLog.textContent = "等待执行…";
     })();
   </script>
 </body>
@@ -1905,51 +1869,6 @@ function sanitizeEnv(input: Record<string, unknown> | undefined): Record<
     result[trimmedKey] = value.trim();
   }
   return result;
-}
-
-async function runShellCommand(command: string): Promise<{
-  stdout: string;
-  stderr: string;
-  code: number;
-}> {
-  return new Promise((resolve) => {
-    const child = spawn(command, {
-      shell: true,
-      env: process.env,
-      cwd: process.cwd(),
-    });
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk.toString();
-      if (stdout.length > MAX_COMMAND_OUTPUT) {
-        stdout = stdout.slice(-MAX_COMMAND_OUTPUT);
-      }
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > MAX_COMMAND_OUTPUT) {
-        stderr = stderr.slice(-MAX_COMMAND_OUTPUT);
-      }
-    });
-
-    child.on("close", (code) => {
-      resolve({
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        code: code ?? -1,
-      });
-    });
-
-    child.on("error", (error) => {
-      resolve({
-        stdout: stdout.trim(),
-        stderr: (error as Error).message,
-        code: -1,
-      });
-    });
-  });
 }
 
 function createRequestListener(logger?: Logger) {
@@ -2313,34 +2232,6 @@ function createRequestListener(logger?: Logger) {
             error: { message: "删除工具失败" },
           });
         }
-        return;
-      }
-
-      if (
-        req.method === "POST" &&
-        url.pathname.startsWith("/api/cli/tools/") &&
-        url.pathname.endsWith("/run")
-      ) {
-        const id = url.pathname.slice("/api/cli/tools/".length, -"/run".length);
-        const name = decodeId(id);
-        if (!name) {
-          sendJson(res, 400, {
-            success: false,
-            error: { message: "工具标识无效" },
-          });
-          return;
-        }
-        const config = readConfig();
-        const tool = config.cli.find((item) => item.name === name);
-        if (!tool) {
-          sendJson(res, 404, {
-            success: false,
-            error: { message: "未找到目标工具" },
-          });
-          return;
-        }
-        const result = await runShellCommand(tool.command);
-        sendJson(res, 200, { success: true, data: result });
         return;
       }
 
