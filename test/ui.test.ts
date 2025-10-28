@@ -19,7 +19,13 @@ describe("UI server", () => {
   let baseUrl: string;
 
   async function bootServer() {
-    const result = await startUiServer({ port: 0 });
+    const mockLogger = {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    };
+    const result = await startUiServer({ port: 0, logger: mockLogger as any });
     server = result.server;
     baseUrl = result.url;
   }
@@ -46,66 +52,72 @@ describe("UI server", () => {
     const response = await fetch(baseUrl);
     const html = await response.text();
     expect(response.status).toBe(200);
-    expect(html).toContain("ACS 控制台");
+    expect(html).toContain("ACS Web 管理界面");
     expect(html).toContain("项目管理");
-    expect(html).toContain("CLI 工具管理");
+    expect(html).toContain("CLI 工具");
   });
 
   it("supports creating, switching and deleting claude profiles", async () => {
-    const createResponse = await fetch(`${baseUrl}/api/claude/profile`, {
+    // 添加配置
+    const createResponse = await fetch(`${baseUrl}/api/config/claude/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "work",
-        model: "claude-work",
-        env: {
-          ANTHROPIC_AUTH_TOKEN: "sk-work",
-          ANTHROPIC_BASE_URL: "https://api.example.com",
+        profile: {
+          model: "claude-work",
+          env: {
+            ANTHROPIC_AUTH_TOKEN: "sk-work",
+            ANTHROPIC_BASE_URL: "https://api.example.com",
+          },
         },
-        setCurrent: true,
       }),
     });
     const createResult = (await createResponse.json()) as {
       success: boolean;
-      data: { ok: boolean };
+      data: { name: string };
     };
     expect(createResult.success).toBe(true);
-    expect(createResult.data.ok).toBe(true);
+    expect(createResult.data.name).toBe("work");
 
-    let claudeState = await fetch(`${baseUrl}/api/claude`).then((res) =>
-      res.json()
-    );
-    expect(claudeState.success).toBe(true);
-    expect(claudeState.data.current.name).toBe("work");
-    expect(claudeState.data.current.model).toBe("claude-work");
-
-    const id = Buffer.from("work", "utf8").toString("base64url");
-    const switchResponse = await fetch(`${baseUrl}/api/claude/current`, {
+    // 切换配置
+    const switchResponse = await fetch(`${baseUrl}/api/config/claude/use`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ profile: "work" }),
     });
     const switchResult = (await switchResponse.json()) as {
       success: boolean;
-      data: { ok: boolean };
+      data: { profile: string };
     };
     expect(switchResult.success).toBe(true);
-    expect(switchResult.data.ok).toBe(true);
+    expect(switchResult.data.profile).toBe("work");
 
-    const deleteResponse = await fetch(`${baseUrl}/api/claude/profile/${id}`, {
+    // 检查当前配置
+    let currentState = await fetch(`${baseUrl}/api/config/claude/current`).then(
+      (res) => res.json()
+    );
+    expect(currentState.success).toBe(true);
+    expect(currentState.data.name).toBe("work");
+    expect(currentState.data.model).toBe("claude-work");
+
+    // 删除配置
+    const deleteResponse = await fetch(`${baseUrl}/api/config/claude/work`, {
       method: "DELETE",
     });
     const deleteResult = (await deleteResponse.json()) as {
       success: boolean;
-      data: { ok: boolean };
+      data: { name: string };
     };
     expect(deleteResult.success).toBe(true);
-    expect(deleteResult.data.ok).toBe(true);
+    expect(deleteResult.data.name).toBe("work");
 
-    claudeState = await fetch(`${baseUrl}/api/claude`).then((res) => res.json());
-    expect(claudeState.success).toBe(true);
-    expect(claudeState.data.configs).toHaveLength(0);
-    expect(claudeState.data.current).toBeNull();
+    // 检查配置列表
+    const listState = await fetch(`${baseUrl}/api/config/claude/list`).then(
+      (res) => res.json()
+    );
+    expect(listState.success).toBe(true);
+    expect(listState.data).toHaveLength(0);
 
     const config = readConfig();
     expect(config.config.claude?.configs).toEqual({});

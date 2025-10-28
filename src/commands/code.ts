@@ -8,6 +8,7 @@ import { getConfigPath, readConfig } from "../config";
 import { CliArguments, CommandContext, CommandResult } from "../types";
 import { formatPathForDisplay } from "../utils/path";
 import { spawnCommand } from "../utils/spawn";
+import { runConfig } from "./config";
 
 export async function runCode(
   _args: CliArguments,
@@ -70,6 +71,16 @@ export async function runCode(
       choices: cliChoices,
     },
   ]);
+
+  const selectedCommandName =
+    selectedCli.command?.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+
+  if (selectedCommandName === "claude") {
+    await runConfig(
+      { flags: {}, positional: ["claude", "current"] },
+      context
+    );
+  }
 
   context.logger.info(
     t("code.execute", {

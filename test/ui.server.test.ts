@@ -15,7 +15,13 @@ describe("acs ui 服务端", () => {
   beforeEach(async () => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "acs-ui-test-"));
     homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(tempHome);
-    const started = await startUiServer({ port: 0 });
+    const mockLogger = {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    };
+    const started = await startUiServer({ port: 0, logger: mockLogger as any });
     server = started.server;
     baseUrl = started.url;
   });
@@ -57,91 +63,83 @@ describe("acs ui 服务端", () => {
     const projectDir = path.join(tempHome, "demo");
     fs.mkdirSync(projectDir, { recursive: true });
 
+    // 添加项目
     await api("/api/projects", {
       method: "POST",
       json: {
+        name: "demo",
         path: projectDir,
       },
     });
 
-    const projectList = await api<{ items: Array<{ id: string; name: string }> }>(
+    // 获取项目列表
+    const projectList = await api<Array<{ name: string; path: string }>>(
       "/api/projects"
     );
-    expect(projectList.items).toHaveLength(1);
-    const projectId = projectList.items[0].id;
-    expect(projectList.items[0].name).toBe("demo");
+    expect(projectList).toHaveLength(1);
+    expect(projectList[0].name).toBe("demo");
 
-    const projectDetail = await api<{
-      name: string;
-      displayPath: string;
-      exists: boolean;
-      isDirectory: boolean;
-    }>(`/api/projects/${projectId}`);
-    expect(projectDetail.exists).toBe(true);
-    expect(projectDetail.isDirectory).toBe(true);
-
-    await api("/api/projects", {
+    // 删除项目
+    await api("/api/projects/demo", {
       method: "DELETE",
-      json: { ids: [projectId] },
     });
-    const projectListAfter = await api<{ items: unknown[] }>("/api/projects");
-    expect(projectListAfter.items).toHaveLength(0);
+    const projectListAfter = await api<unknown[]>("/api/projects");
+    expect(projectListAfter).toHaveLength(0);
 
-    await api("/api/cli/tools", {
+    // 添加 CLI 工具
+    await api("/api/cli", {
       method: "POST",
       json: {
         name: "test-run",
-        command: 'node -p "1+1"',
+        command: 'node -e "console.log(1+1)"',
       },
     });
 
-    const cliList = await api<{ items: Array<{ id: string }> }>("/api/cli/tools");
-    expect(cliList.items).toHaveLength(1);
-    const cliId = cliList.items[0].id;
-
-    const cliRun = await api<{ code: number; stdout: string; stderr: string }>(
-      `/api/cli/tools/${cliId}/run`,
-      { method: "POST" }
+    // 获取 CLI 工具列表
+    const cliList = await api<Array<{ name: string; command: string }>>(
+      "/api/cli"
     );
-    expect(cliRun.code).toBe(0);
-    expect(cliRun.stdout.trim()).toBe("2");
-    expect(cliRun.stderr).toBe("");
+    const createdTool = cliList.find((item) => item.name === "test-run");
+    expect(createdTool).toBeDefined();
 
-    await api("/api/cli/tools", {
+    // 删除 CLI 工具
+    await api("/api/cli/test-run", {
       method: "DELETE",
-      json: { ids: [cliId] },
     });
-    const cliListAfter = await api<{ items: unknown[] }>("/api/cli/tools");
-    expect(cliListAfter.items).toHaveLength(0);
+    const cliListAfter = await api<Array<{ name: string }>>("/api/cli");
+    expect(cliListAfter.some((item) => item.name === "test-run")).toBe(false);
 
-    await api("/api/claude/profile", {
+    // 添加 Claude 配置
+    await api("/api/config/claude/add", {
       method: "POST",
       json: {
         name: "dev",
-        model: "claude-3-sonnet",
-        env: {
-          ANTHROPIC_BASE_URL: "https://example.dev",
-          ANTHROPIC_AUTH_TOKEN: "abcd1234abcd",
+        profile: {
+          model: "claude-3-sonnet",
+          env: {
+            ANTHROPIC_BASE_URL: "https://example.dev",
+            ANTHROPIC_AUTH_TOKEN: "abcd1234abcd",
+          },
         },
-        setCurrent: true,
       },
     });
 
+    // 切换到该配置
+    await api("/api/config/claude/use", {
+      method: "POST",
+      json: { profile: "dev" },
+    });
+
+    // 检查当前配置
     const claudeData = await api<{
-      current: {
-        name: string;
-        model?: string;
-        env: Record<string, string>;
-        maskedEnv: Record<string, string>;
-      } | null;
-      configs: Array<{ name: string }>;
-    }>("/api/claude");
-    expect(claudeData.configs).toHaveLength(1);
-    expect(claudeData.current?.name).toBe("dev");
-    expect(claudeData.current?.model).toBe("claude-3-sonnet");
-    expect(claudeData.current?.maskedEnv.ANTHROPIC_AUTH_TOKEN).toMatch(
-      /^abcd\*+abcd$/
-    );
+      name: string;
+      model: string;
+      env: { ANTHROPIC_AUTH_TOKEN: string; ANTHROPIC_BASE_URL: string };
+    }>("/api/config/claude/current");
+    expect(claudeData.name).toBe("dev");
+    expect(claudeData.model).toBe("claude-3-sonnet");
+    // Token 应该被打码
+    expect(claudeData.env.ANTHROPIC_AUTH_TOKEN).toMatch(/^abcd\*+abcd$/);
 
     const config = readConfig();
     expect(config.config.claude?.current).toBe("dev");

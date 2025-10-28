@@ -1,5 +1,5 @@
 
-基于现有的 ACS CLI 工具，实现`acs ui`命令，执行后自动打开`http://localhost:8888`，允许用户通过 Web 界面调用和执行 ACS 的各种命令（如 `acs list`、`acs cli` 等），提供更友好、美观的图形化操作体验。
+基于现有的 ACS CLI 工具，实现`acs ui`命令，执行后自动打开`http://localhost:8888`，提供更友好、美观的图形化操作体验，使用AntDesign这个UI
 
 ### 项目目标
 - 提供 Web 界面替代命令行操作
