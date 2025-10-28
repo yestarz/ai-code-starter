@@ -69,6 +69,7 @@ function ProjectsTab() {
   const [projects, setProjects] = useState([]);
   const [searchText, setSearchText] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
+  const [editingProject, setEditingProject] = useState(null);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -97,6 +98,7 @@ function ProjectsTab() {
       if (result.success) {
         message.success('项目添加成功');
         setModalVisible(false);
+        setEditingProject(null);
         form.resetFields();
         loadProjects();
       } else {
@@ -104,6 +106,29 @@ function ProjectsTab() {
       }
     } catch (error) {
       message.error('添加失败: ' + error.message);
+    }
+  };
+
+  const handleEdit = async (values) => {
+    if (!editingProject) {
+      return;
+    }
+    try {
+      const result = await api.put(
+        `/api/projects/${encodeURIComponent(editingProject.name)}`,
+        values
+      );
+      if (result.success) {
+        message.success('项目更新成功');
+        setModalVisible(false);
+        setEditingProject(null);
+        form.resetFields();
+        loadProjects();
+      } else {
+        message.error('更新失败: ' + result.error);
+      }
+    } catch (error) {
+      message.error('更新失败: ' + error.message);
     }
   };
 
@@ -130,6 +155,29 @@ function ProjectsTab() {
     });
   };
 
+  const openAddModal = () => {
+    setEditingProject(null);
+    form.resetFields();
+    setModalVisible(true);
+  };
+
+  const showEditModal = (project) => {
+    setEditingProject(project);
+    form.setFieldsValue({
+      name: project.name,
+      path: project.path,
+    });
+    setModalVisible(true);
+  };
+
+  const handleSubmit = async (values) => {
+    if (editingProject) {
+      await handleEdit(values);
+    } else {
+      await handleAdd(values);
+    }
+  };
+
   const filteredProjects = projects.filter(
     (p) =>
       p.name.toLowerCase().includes(searchText.toLowerCase()) ||
@@ -152,15 +200,20 @@ function ProjectsTab() {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 200,
       render: (_, record) => (
-        <Button
-          danger
-          size="small"
-          onClick={() => handleDelete(record.name)}
-        >
-          删除
-        </Button>
+        <Space>
+          <Button size="small" onClick={() => showEditModal(record)}>
+            编辑
+          </Button>
+          <Button
+            danger
+            size="small"
+            onClick={() => handleDelete(record.name)}
+          >
+            删除
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -174,7 +227,7 @@ function ProjectsTab() {
           style={{ width: 300 }}
           onChange={(e) => setSearchText(e.target.value)}
         />
-        <Button type="primary" onClick={() => setModalVisible(true)}>
+        <Button type="primary" onClick={openAddModal}>
           添加项目
         </Button>
       </div>
@@ -188,7 +241,7 @@ function ProjectsTab() {
           locale={{
             emptyText: (
               <Empty description="暂无项目">
-                <Button type="primary" onClick={() => setModalVisible(true)}>
+                <Button type="primary" onClick={openAddModal}>
                   添加第一个项目
                 </Button>
               </Empty>
@@ -198,15 +251,16 @@ function ProjectsTab() {
       </Card>
 
       <Modal
-        title="添加项目"
+        title={editingProject ? '编辑项目' : '添加项目'}
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false);
+          setEditingProject(null);
           form.resetFields();
         }}
         footer={null}
       >
-        <Form form={form} onFinish={handleAdd} layout="vertical">
+        <Form form={form} onFinish={handleSubmit} layout="vertical">
           <Form.Item
             label="项目名称"
             name="name"
@@ -225,12 +279,13 @@ function ProjectsTab() {
             <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
               <Button onClick={() => {
                 setModalVisible(false);
+                setEditingProject(null);
                 form.resetFields();
               }}>
                 取消
               </Button>
               <Button type="primary" htmlType="submit">
-                添加
+                {editingProject ? '更新' : '添加'}
               </Button>
             </Space>
           </Form.Item>
@@ -464,7 +519,9 @@ function ConfigTab() {
   const [currentConfig, setCurrentConfig] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
+  const [editingConfig, setEditingConfig] = useState(null);
   const [form] = Form.useForm();
+  const RESERVED_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'];
 
   useEffect(() => {
     loadConfigs();
@@ -493,17 +550,34 @@ function ConfigTab() {
     }
   };
 
+  const buildProfileFromValues = (values) => {
+    const extraEnv = {};
+    (values.extraEnv || []).forEach((item) => {
+      if (!item) {
+        return;
+      }
+      const key = item.key?.trim();
+      const value = item.value?.trim();
+      if (key && value && !RESERVED_ENV_KEYS.includes(key)) {
+        extraEnv[key] = value;
+      }
+    });
+
+    return {
+      env: {
+        ...extraEnv,
+        ANTHROPIC_BASE_URL: values.baseUrl,
+        ANTHROPIC_AUTH_TOKEN: values.token,
+      },
+      model: values.model,
+    };
+  };
+
   const handleAdd = async (values) => {
     try {
       const data = {
         name: values.name,
-        profile: {
-          env: {
-            ANTHROPIC_BASE_URL: values.baseUrl,
-            ANTHROPIC_AUTH_TOKEN: values.token,
-          },
-          model: values.model || undefined,
-        },
+        profile: buildProfileFromValues(values),
       };
       
       const result = await api.post('/api/config/claude/add', data);
@@ -517,6 +591,30 @@ function ConfigTab() {
       }
     } catch (error) {
       message.error('添加失败: ' + error.message);
+    }
+  };
+
+  const handleUpdate = async (values) => {
+    if (!editingConfig) {
+      return;
+    }
+    try {
+      const profile = buildProfileFromValues(values);
+      const result = await api.put(
+        `/api/config/claude/${encodeURIComponent(editingConfig)}`,
+        { profile }
+      );
+      if (result.success) {
+        message.success('Claude 配置更新成功');
+        setModalVisible(false);
+        setEditingConfig(null);
+        form.resetFields();
+        loadConfigs();
+      } else {
+        message.error('更新失败: ' + result.error);
+      }
+    } catch (error) {
+      message.error('更新失败: ' + error.message);
     }
   };
 
@@ -560,6 +658,39 @@ function ConfigTab() {
   const filteredConfigs = configs.filter((c) =>
     c.name.toLowerCase().includes(searchText.toLowerCase())
   );
+
+  const getExtraEnvEntries = (env = {}) =>
+    Object.entries(env).filter(
+      ([key]) => !RESERVED_ENV_KEYS.includes(key)
+    );
+
+  const openAddModal = () => {
+    setEditingConfig(null);
+    form.resetFields();
+    setModalVisible(true);
+  };
+
+  const openEditModal = (record) => {
+    setEditingConfig(record.name);
+    form.setFieldsValue({
+      name: record.name,
+      baseUrl: record.env?.ANTHROPIC_BASE_URL,
+      token: record.env?.ANTHROPIC_AUTH_TOKEN,
+      model: record.model,
+      extraEnv: getExtraEnvEntries(record.env || {}).map(([key, value]) => ({
+        key,
+        value,
+      })),
+    });
+    setModalVisible(true);
+  };
+
+  const handleSubmit = (values) => {
+    if (editingConfig) {
+      return handleUpdate(values);
+    }
+    return handleAdd(values);
+  };
 
   const columns = [
     {
@@ -609,6 +740,12 @@ function ConfigTab() {
             </Button>
           )}
           <Button
+            size="small"
+            onClick={() => openEditModal(record)}
+          >
+            编辑
+          </Button>
+          <Button
             danger
             size="small"
             onClick={() => handleDelete(record.name)}
@@ -643,6 +780,11 @@ function ConfigTab() {
             <Descriptions.Item label="Model">
               {currentConfig.model}
             </Descriptions.Item>
+            {getExtraEnvEntries(currentConfig.env || {}).map(([key, value]) => (
+              <Descriptions.Item key={key} label={key}>
+                {value}
+              </Descriptions.Item>
+            ))}
           </Descriptions>
         </div>
       )}
@@ -654,7 +796,7 @@ function ConfigTab() {
           style={{ width: 300 }}
           onChange={(e) => setSearchText(e.target.value)}
         />
-        <Button type="primary" onClick={() => setModalVisible(true)}>
+        <Button type="primary" onClick={openAddModal}>
           添加配置
         </Button>
       </div>
@@ -668,7 +810,7 @@ function ConfigTab() {
           locale={{
             emptyText: (
               <Empty description="暂无 Claude 配置">
-                <Button type="primary" onClick={() => setModalVisible(true)}>
+                <Button type="primary" onClick={openAddModal}>
                   添加第一个配置
                 </Button>
               </Empty>
@@ -678,21 +820,22 @@ function ConfigTab() {
       </Card>
 
       <Modal
-        title="添加 Claude 配置"
+        title={editingConfig ? '编辑 Claude 配置' : '添加 Claude 配置'}
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false);
+          setEditingConfig(null);
           form.resetFields();
         }}
         footer={null}
       >
-        <Form form={form} onFinish={handleAdd} layout="vertical">
+        <Form form={form} onFinish={handleSubmit} layout="vertical">
           <Form.Item
             label="配置名称"
             name="name"
             rules={[{ required: true, message: '请输入配置名称' }]}
           >
-            <Input placeholder="例如: production" />
+            <Input placeholder="例如: production" disabled={Boolean(editingConfig)} />
           </Form.Item>
           <Form.Item
             label="ANTHROPIC_BASE_URL"
@@ -706,21 +849,73 @@ function ConfigTab() {
             name="token"
             rules={[{ required: true, message: '请输入 Auth Token' }]}
           >
-            <Input.Password placeholder="sk-ant-..." />
+            <Input placeholder="sk-ant-..." />
           </Form.Item>
-          <Form.Item label="Model" name="model">
+          <Form.Item
+            label="Model"
+            name="model"
+            rules={[{ required: true, message: '请输入模型名称' }]}
+          >
             <Input placeholder="claude-3-5-sonnet-20241022" />
+          </Form.Item>
+          <Form.Item
+            label={
+              <Space size={8}>
+                <span>自定义环境变量</span>
+                <Typography.Link
+                  href="https://docs.claude.com/zh-CN/docs/claude-code/settings#%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  环境变量说明
+                </Typography.Link>
+              </Space>
+            }
+          >
+            <Form.List name="extraEnv">
+              {(fields, { add, remove }) => (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <Space key={key} align="baseline" wrap>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'key']}
+                        rules={[{ required: true, message: '请输入变量名' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="变量名，如 API_TIMEOUT_MS" />
+                      </Form.Item>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'value']}
+                        rules={[{ required: true, message: '请输入变量值' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Input placeholder="变量值，如 300000" />
+                      </Form.Item>
+                      <Button type="link" danger onClick={() => remove(name)}>
+                        删除
+                      </Button>
+                    </Space>
+                  ))}
+                  <Button type="dashed" onClick={() => add()}>
+                    新增环境变量
+                  </Button>
+                </Space>
+              )}
+            </Form.List>
           </Form.Item>
           <Form.Item>
             <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
               <Button onClick={() => {
                 setModalVisible(false);
+                setEditingConfig(null);
                 form.resetFields();
               }}>
                 取消
               </Button>
               <Button type="primary" htmlType="submit">
-                添加
+                {editingConfig ? '保存' : '添加'}
               </Button>
             </Space>
           </Form.Item>

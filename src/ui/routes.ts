@@ -1,10 +1,12 @@
 /**
  * API 路由处理
  */
+import fs from "node:fs";
 import http from "node:http";
 import type { Logger } from "../utils/logger";
 import { readConfig, writeConfig } from "../config";
 import type { AcsConfig, Project, CliTool, ClaudeProfile } from "../types";
+import { normalizePath } from "../utils/path";
 import { applyClaudeProfileToSettings } from "../utils/claude";
 
 interface ApiResponse<T = unknown> {
@@ -63,22 +65,6 @@ async function parseJsonBody<T>(req: http.IncomingMessage): Promise<T | null> {
 }
 
 /**
- * 打码敏感信息
- */
-function maskToken(input?: string): string {
-  if (!input) {
-    return "-";
-  }
-  if (input.length <= 8) {
-    return "*".repeat(input.length);
-  }
-  const head = input.slice(0, 4);
-  const tail = input.slice(-4);
-  const middleLength = Math.max(input.length - 8, 0);
-  return `${head}${"*".repeat(middleLength)}${tail}`;
-}
-
-/**
  * 处理项目相关 API
  */
 async function handleProjectsApi(
@@ -111,9 +97,44 @@ async function handleProjectsApi(
         return;
       }
 
+      const trimmedName = body.name.trim();
+      const normalizedPath = normalizePath(body.path);
+
+      if (!trimmedName || !normalizedPath) {
+        sendJson(res, 400, {
+          success: false,
+          error: "项目名称或路径不能为空",
+        });
+        return;
+      }
+
+      try {
+        if (!fs.existsSync(normalizedPath)) {
+          sendJson(res, 400, {
+            success: false,
+            error: "项目路径不存在",
+          });
+          return;
+        }
+        if (!fs.statSync(normalizedPath).isDirectory()) {
+          sendJson(res, 400, {
+            success: false,
+            error: "项目路径不是目录",
+          });
+          return;
+        }
+      } catch (error) {
+        logger.error(`验证项目路径失败: ${(error as Error).message}`);
+        sendJson(res, 400, {
+          success: false,
+          error: "无法验证项目路径",
+        });
+        return;
+      }
+
       // 检查重复
       const duplicate = config.projects.find(
-        (p) => p.name === body.name || p.path === body.path
+        (p) => p.name === trimmedName || p.path === normalizedPath
       );
       if (duplicate) {
         sendJson(res, 409, {
@@ -124,8 +145,8 @@ async function handleProjectsApi(
       }
 
       const newProject: Project = {
-        name: body.name,
-        path: body.path,
+        name: trimmedName,
+        path: normalizedPath,
       };
 
       writeConfig({
@@ -133,10 +154,108 @@ async function handleProjectsApi(
         projects: [...config.projects, newProject],
       });
 
-      logger.info(`添加项目: ${body.name}`);
+      logger.info(`添加项目: ${trimmedName}`);
       sendJson(res, 201, {
         success: true,
         data: newProject,
+      });
+      return;
+    }
+
+    // PUT /api/projects/:name - 编辑项目
+    const updateMatch = url.match(/^\/api\/projects\/(.+)$/);
+    if (method === "PUT" && updateMatch) {
+      const originalName = decodeURIComponent(updateMatch[1]);
+      const body = await parseJsonBody<{ name: string; path: string }>(req);
+      if (!body || !body.name || !body.path) {
+        sendJson(res, 400, {
+          success: false,
+          error: "缺少必要的参数: name 和 path",
+        });
+        return;
+      }
+
+      const trimmedName = body.name.trim();
+      const normalizedPath = normalizePath(body.path);
+
+      if (!trimmedName || !normalizedPath) {
+        sendJson(res, 400, {
+          success: false,
+          error: "项目名称或路径不能为空",
+        });
+        return;
+      }
+
+      try {
+        if (!fs.existsSync(normalizedPath)) {
+          sendJson(res, 400, {
+            success: false,
+            error: "项目路径不存在",
+          });
+          return;
+        }
+        if (!fs.statSync(normalizedPath).isDirectory()) {
+          sendJson(res, 400, {
+            success: false,
+            error: "项目路径不是目录",
+          });
+          return;
+        }
+      } catch (error) {
+        logger.error(`验证项目路径失败: ${(error as Error).message}`);
+        sendJson(res, 400, {
+          success: false,
+          error: "无法验证项目路径",
+        });
+        return;
+      }
+
+      const index = config.projects.findIndex(
+        (project) => project.name === originalName
+      );
+
+      if (index === -1) {
+        sendJson(res, 404, {
+          success: false,
+          error: "项目不存在",
+        });
+        return;
+      }
+
+      const conflict = config.projects.find(
+        (project, projectIndex) =>
+          projectIndex !== index &&
+          (project.name === trimmedName || project.path === normalizedPath)
+      );
+
+      if (conflict) {
+        sendJson(res, 409, {
+          success: false,
+          error: "项目名称或路径已存在",
+        });
+        return;
+      }
+
+      const updatedProject: Project = {
+        name: trimmedName,
+        path: normalizedPath,
+      };
+
+      const nextProjects = [...config.projects];
+      nextProjects[index] = updatedProject;
+
+      writeConfig({
+        ...config,
+        projects: nextProjects,
+      });
+
+      logger.info(
+        `更新项目: ${originalName} -> ${updatedProject.name} (${updatedProject.path})`
+      );
+
+      sendJson(res, 200, {
+        success: true,
+        data: updatedProject,
       });
       return;
     }
@@ -377,21 +496,19 @@ async function handleClaudeConfigApi(
         return;
       }
 
-      // 打码敏感信息
-      const maskedProfile = {
+      const currentProfileData = {
         name: claudeConfig.current,
         env: {
           ANTHROPIC_BASE_URL: currentProfile.env?.ANTHROPIC_BASE_URL ?? "-",
-          ANTHROPIC_AUTH_TOKEN: maskToken(
-            currentProfile.env?.ANTHROPIC_AUTH_TOKEN
-          ),
+          ANTHROPIC_AUTH_TOKEN:
+            currentProfile.env?.ANTHROPIC_AUTH_TOKEN ?? "-",
         },
         model: currentProfile.model ?? "-",
       };
 
       sendJson(res, 200, {
         success: true,
-        data: maskedProfile,
+        data: currentProfileData,
       });
       return;
     }
@@ -404,7 +521,7 @@ async function handleClaudeConfigApi(
           isCurrent: claudeConfig.current === name,
           env: {
             ANTHROPIC_BASE_URL: profile.env?.ANTHROPIC_BASE_URL ?? "-",
-            ANTHROPIC_AUTH_TOKEN: maskToken(profile.env?.ANTHROPIC_AUTH_TOKEN),
+            ANTHROPIC_AUTH_TOKEN: profile.env?.ANTHROPIC_AUTH_TOKEN ?? "-",
           },
           model: profile.model ?? "-",
         })

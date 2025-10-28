@@ -54,7 +54,11 @@ describe("acs ui 服务端", () => {
     const response = await fetch(new URL(pathname, baseUrl), requestInit);
     const payload = await response.json();
     if (!payload.success) {
-      throw new Error(payload.error?.message ?? "请求失败");
+      const errorMessage =
+        typeof payload.error === "string"
+          ? payload.error
+          : payload.error?.message ?? "请求失败";
+      throw new Error(errorMessage);
     }
     return payload.data as T;
   }
@@ -153,5 +157,34 @@ describe("acs ui 服务端", () => {
     expect(settings.env?.ANTHROPIC_AUTH_TOKEN).toBe("abcd1234abcd");
     expect(settings.env?.ANTHROPIC_BASE_URL).toBe("https://example.dev");
     expect(settings.model).toBe("claude-3-sonnet");
+  });
+
+  it("项目编辑时会校验目标路径存在", async () => {
+    const originDir = path.join(tempHome, "origin");
+    fs.mkdirSync(originDir, { recursive: true });
+
+    await api("/api/projects", {
+      method: "POST",
+      json: {
+        name: "origin",
+        path: originDir,
+      },
+    });
+
+    const missingDir = path.join(tempHome, "missing");
+
+    await expect(
+      api("/api/projects/origin", {
+        method: "PUT",
+        json: {
+          name: "origin",
+          path: missingDir,
+        },
+      })
+    ).rejects.toThrow("项目路径不存在");
+
+    const config = readConfig();
+    const stored = config.projects.find((item) => item.name === "origin");
+    expect(stored?.path).toBe(path.resolve(originDir));
   });
 });

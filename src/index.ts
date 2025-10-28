@@ -11,9 +11,10 @@ import {
   CommandResult,
 } from "./types";
 import { runList } from "./commands/list";
-import { runRemove } from "./commands/remove";
-import { runCode } from "./commands/code";
 import { runAdd } from "./commands/add";
+import { runEdit } from "./commands/edit";
+import { runCode } from "./commands/code";
+import { runRemove } from "./commands/remove";
 import { runLang } from "./commands/lang";
 import { runConfig } from "./commands/config";
 import { runCli } from "./commands/cli";
@@ -63,6 +64,12 @@ const commandDefinitions: CommandDefinition[] = [
     aliases: [],
     descriptionKey: "command.add.description",
     handler: runAdd,
+  },
+  {
+    name: "edit",
+    aliases: [],
+    descriptionKey: "command.edit.description",
+    handler: runEdit,
   },
   {
     name: "lang",
