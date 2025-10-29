@@ -538,6 +538,7 @@ function ConfigTab() {
   const [searchText, setSearchText] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [editingConfig, setEditingConfig] = useState(null);
+  const [tokenVisible, setTokenVisible] = useState(false);
   const [form] = Form.useForm();
   const RESERVED_ENV_KEYS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'];
 
@@ -682,6 +683,55 @@ function ConfigTab() {
       ([key]) => !RESERVED_ENV_KEYS.includes(key)
     );
 
+  // 对敏感值进行部分打码
+  const maskToken = (token = '') => {
+    if (!token) {
+      return '';
+    }
+    if (token.length <= 8) {
+      return '*'.repeat(token.length);
+    }
+    return `${token.slice(0, 4)}***${token.slice(-4)}`;
+  };
+
+  const SensitiveText = ({
+    value,
+    visible: controlledVisible,
+    onToggle,
+    showToggle = true,
+  }) => {
+    const [innerVisible, setInnerVisible] = useState(false);
+    const isControlled = typeof controlledVisible === 'boolean';
+    const visible = isControlled ? controlledVisible : innerVisible;
+    const handleToggle = () => {
+      if (isControlled) {
+        onToggle?.(!controlledVisible);
+      } else {
+        setInnerVisible((prev) => !prev);
+      }
+    };
+    if (!value) {
+      return <Typography.Text code>未配置</Typography.Text>;
+    }
+    return (
+      <Space size="small">
+        <Typography.Text code>
+          {visible ? value : maskToken(value)}
+        </Typography.Text>
+        {showToggle && (
+          <Button
+            type="link"
+            size="small"
+            onClick={handleToggle}
+            style={{ padding: 0 }}
+          >
+            {visible ? '🙈 隐藏' : '👁️ 显示'}
+          </Button>
+        )}
+      </Space>
+    );
+  };
+
   const openAddModal = () => {
     setEditingConfig(null);
     form.resetFields();
@@ -730,10 +780,26 @@ function ConfigTab() {
       ),
     },
     {
-      title: 'Auth Token',
+      title: (
+        <Space size="small">
+          <span>Auth Token</span>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => setTokenVisible((prev) => !prev)}
+            style={{ padding: 0 }}
+          >
+            {tokenVisible ? '🙈 隐藏' : '👁️ 显示'}
+          </Button>
+        </Space>
+      ),
       key: 'token',
       render: (_, record) => (
-        <Typography.Text code>{record.env.ANTHROPIC_AUTH_TOKEN}</Typography.Text>
+        <SensitiveText
+          value={record.env.ANTHROPIC_AUTH_TOKEN}
+          visible={tokenVisible}
+          showToggle={false}
+        />
       ),
     },
     {
@@ -793,7 +859,7 @@ function ConfigTab() {
               {currentConfig.env.ANTHROPIC_BASE_URL}
             </Descriptions.Item>
             <Descriptions.Item label="Auth Token">
-              {currentConfig.env.ANTHROPIC_AUTH_TOKEN}
+              <SensitiveText value={currentConfig.env?.ANTHROPIC_AUTH_TOKEN} />
             </Descriptions.Item>
             <Descriptions.Item label="Model">
               {currentConfig.model}
