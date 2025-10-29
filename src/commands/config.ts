@@ -16,10 +16,9 @@ function maskToken(input?: string): string {
   if (input.length <= 4) {
     return "*".repeat(input.length);
   }
-  const head = input.slice(0, 4);
-  const tail = input.slice(-4);
-  const middleLength = Math.max(input.length - 8, 0);
-  return `${head}${"*".repeat(middleLength)}${tail}`;
+  const head = input.slice(0, 2);
+  const tail = input.slice(-2);
+  return `${head}****${tail}`;
 }
 
 function printProfileInfo(

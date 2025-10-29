@@ -690,10 +690,10 @@ function ConfigTab() {
     if (!token) {
       return '';
     }
-    if (token.length <= 8) {
+    if (token.length <= 4) {
       return '*'.repeat(token.length);
     }
-    return `${token.slice(0, 4)}***${token.slice(-4)}`;
+    return `${token.slice(0, 2)}****${token.slice(-2)}`;
   };
 
   const SensitiveText = ({
