@@ -25,6 +25,23 @@ const {
   App: AntApp,
 } = antd;
 
+const Icon = {
+  Delete: () => (
+    <span role="img" aria-label="删除" style={{ fontSize: 16, lineHeight: 1 }}>
+      🗑️
+    </span>
+  ),
+  Plus: () => (
+    <span
+      role="img"
+      aria-label="新增"
+      style={{ fontSize: 16, lineHeight: 1, marginRight: 4 }}
+    >
+      ➕
+    </span>
+  ),
+};
+
 const { Header, Content } = Layout;
 const { Title } = Typography;
 const { Search } = Input;
@@ -253,6 +270,7 @@ function ProjectsTab() {
       <Modal
         title={editingProject ? '编辑项目' : '添加项目'}
         open={modalVisible}
+        width={720}
         onCancel={() => {
           setModalVisible(false);
           setEditingProject(null);
@@ -822,6 +840,7 @@ function ConfigTab() {
       <Modal
         title={editingConfig ? '编辑 Claude 配置' : '添加 Claude 配置'}
         open={modalVisible}
+        width={720}
         onCancel={() => {
           setModalVisible(false);
           setEditingConfig(null);
@@ -876,12 +895,21 @@ function ConfigTab() {
               {(fields, { add, remove }) => (
                 <Space direction="vertical" style={{ width: '100%' }}>
                   {fields.map(({ key, name, ...restField }) => (
-                    <Space key={key} align="baseline" wrap>
+                    <div
+                      key={key}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        width: '100%',
+                        flexWrap: 'nowrap',
+                      }}
+                    >
                       <Form.Item
                         {...restField}
                         name={[name, 'key']}
                         rules={[{ required: true, message: '请输入变量名' }]}
-                        style={{ marginBottom: 0 }}
+                        style={{ marginBottom: 0, width: 500, flex: '0 0 auto' }}
                       >
                         <Input placeholder="变量名，如 API_TIMEOUT_MS" />
                       </Form.Item>
@@ -889,16 +917,24 @@ function ConfigTab() {
                         {...restField}
                         name={[name, 'value']}
                         rules={[{ required: true, message: '请输入变量值' }]}
-                        style={{ marginBottom: 0 }}
+                        style={{ marginBottom: 0, width: 120, flex: '0 0 auto' }}
                       >
                         <Input placeholder="变量值，如 300000" />
                       </Form.Item>
-                      <Button type="link" danger onClick={() => remove(name)}>
-                        删除
-                      </Button>
-                    </Space>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<Icon.Delete />}
+                        aria-label="删除变量"
+                        onClick={() => remove(name)}
+                      />
+                    </div>
                   ))}
-                  <Button type="dashed" onClick={() => add()}>
+                  <Button
+                    type="dashed"
+                    icon={<Icon.Plus />}
+                    onClick={() => add()}
+                  >
                     新增环境变量
                   </Button>
                 </Space>
