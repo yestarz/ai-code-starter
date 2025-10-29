@@ -2,6 +2,7 @@
  * Web UI 服务器实现
  */
 import http from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../utils/logger";
@@ -39,6 +40,26 @@ function getMimeType(filePath: string): string {
     ".ico": "image/x-icon",
   };
   return mimeTypes[ext] || "application/octet-stream";
+}
+
+/**
+ * 解析静态资源目录，兼容开发模式与打包产物
+ */
+function resolvePublicDirectory(baseDir: string): string {
+  const candidates = [
+    path.join(baseDir, "public"),
+    path.join(baseDir, "ui", "public"),
+    path.resolve(process.cwd(), "dist", "ui", "public"),
+    path.resolve(process.cwd(), "src", "ui", "public"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
 }
 
 /**
@@ -94,10 +115,11 @@ async function requestHandler(
 
   // 静态文件服务
   // 在打包后的 CommonJS 环境中，使用相对于当前模块的路径
-  const dirname = typeof __dirname !== "undefined" 
-    ? __dirname 
-    : path.dirname(fileURLToPath(import.meta.url));
-  const publicDir = path.join(dirname, "public");
+  const dirname =
+    typeof __dirname !== "undefined"
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+  const publicDir = resolvePublicDirectory(dirname);
 
   let filePath: string;
   if (url === "/" || url === "/index.html") {

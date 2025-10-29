@@ -1,6 +1,6 @@
 {
   "name": "@yestarz/ai-code-starter",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "module",
   "description": "跨平台项目与CLI管理工具",
   "bin": {
