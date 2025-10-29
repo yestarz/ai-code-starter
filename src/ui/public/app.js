@@ -16,6 +16,7 @@ const {
   Typography,
   Descriptions,
   Tag,
+  Tooltip,
   message,
   Spin,
   Empty,
@@ -24,6 +25,7 @@ const {
   Switch,
   App: AntApp,
 } = antd;
+const { EyeOutlined, EyeInvisibleOutlined } = icons;
 
 const Icon = {
   Delete: () => (
@@ -719,14 +721,22 @@ function ConfigTab() {
           {visible ? value : maskToken(value)}
         </Typography.Text>
         {showToggle && (
-          <Button
-            type="link"
-            size="small"
-            onClick={handleToggle}
-            style={{ padding: 0 }}
-          >
-            {visible ? '🙈 隐藏' : '👁️ 显示'}
-          </Button>
+          <Tooltip title={visible ? '隐藏授权令牌' : '显示授权令牌'}>
+            <Button
+              type="text"
+              size="small"
+              onClick={handleToggle}
+              aria-label={visible ? '隐藏授权令牌' : '显示授权令牌'}
+              icon={visible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+              style={{
+                padding: 0,
+                minWidth: 'auto',
+                color: 'inherit',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            />
+          </Tooltip>
         )}
       </Space>
     );
@@ -783,14 +793,22 @@ function ConfigTab() {
       title: (
         <Space size="small">
           <span>Auth Token</span>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => setTokenVisible((prev) => !prev)}
-            style={{ padding: 0 }}
-          >
-            {tokenVisible ? '🙈 隐藏' : '👁️ 显示'}
-          </Button>
+          <Tooltip title={tokenVisible ? '隐藏所有授权令牌' : '显示所有授权令牌'}>
+            <Button
+              type="text"
+              size="small"
+              onClick={() => setTokenVisible((prev) => !prev)}
+              aria-label={tokenVisible ? '隐藏所有授权令牌' : '显示所有授权令牌'}
+              icon={tokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+              style={{
+                padding: 0,
+                minWidth: 'auto',
+                color: 'inherit',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            />
+          </Tooltip>
         </Space>
       ),
       key: 'token',
