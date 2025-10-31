@@ -60,11 +60,21 @@ async function handleList(
     return { code: 0 };
   }
 
+  const sortedTools = [...tools].sort((a, b) => {
+    const orderA = a.order ?? 0;
+    const orderB = b.order ?? 0;
+    if (orderA !== orderB) {
+      return orderA - orderB;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
   console.log(bold(cyan(t("cli.list.summary", { count: tools.length }))));
-  tools.forEach((tool, index) => {
+  sortedTools.forEach((tool, index) => {
+    const orderInfo = tool.order !== undefined ? ` [${tool.order}]` : "";
     const entry = t("cli.list.entry", {
       index: index + 1,
-      name: bold(tool.name),
+      name: bold(tool.name + orderInfo),
       command: gray(tool.command),
     });
     console.log(entry);
@@ -84,9 +94,10 @@ async function handleAdd(
   const config = readConfig();
   const { t } = context;
 
-  const { name, command } = await inquirer.prompt<{
+  const { name, command, order } = await inquirer.prompt<{
     name: string;
     command: string;
+    order: string;
   }>([
     {
       type: "input",
@@ -102,6 +113,21 @@ async function handleAdd(
       message: t("cli.add.promptCommand"),
       validate(value: string) {
         return value.trim() ? true : t("cli.add.validateCommand");
+      },
+    },
+    {
+      type: "input",
+      name: "order",
+      message: t("cli.add.promptOrder"),
+      default: "0",
+      filter(value: string) {
+        const num = parseInt(value, 10);
+        return isNaN(num) ? 0 : num;
+      },
+      validate(value: number) {
+        return Number.isInteger(value) && value >= 0
+          ? true
+          : t("cli.add.validateOrder");
       },
     },
   ]);
@@ -142,6 +168,7 @@ async function handleAdd(
       {
         name: trimmedName,
         command: trimmedCommand,
+        order,
       },
     ],
   };
@@ -194,9 +221,10 @@ async function handleEdit(
     throw new Error(t("cli.edit.notFound"));
   }
 
-  const { name, command } = await inquirer.prompt<{
+  const { name, command, order } = await inquirer.prompt<{
     name: string;
     command: string;
+    order: string;
   }>([
     {
       type: "input",
@@ -216,14 +244,31 @@ async function handleEdit(
         return value.trim() ? true : t("cli.edit.validateCommand");
       },
     },
+    {
+      type: "input",
+      name: "order",
+      message: t("cli.edit.promptOrder"),
+      default: String(target.order ?? 0),
+      filter(value: string) {
+        const num = parseInt(value, 10);
+        return isNaN(num) ? 0 : num;
+      },
+      validate(value: number) {
+        return Number.isInteger(value) && value >= 0
+          ? true
+          : t("cli.edit.validateOrder");
+      },
+    },
   ]);
 
   const trimmedName = name.trim();
   const trimmedCommand = command.trim();
 
+  const currentOrder = target.order ?? 0;
   if (
     trimmedName === target.name &&
-    trimmedCommand === target.command
+    trimmedCommand === target.command &&
+    order === currentOrder
   ) {
     context.logger.info(t("cli.edit.noChanges"));
     return { code: 0 };
@@ -258,7 +303,11 @@ async function handleEdit(
   }
 
   const nextCli = [...tools];
-  nextCli[selectedIndex] = { name: trimmedName, command: trimmedCommand };
+  nextCli[selectedIndex] = {
+    name: trimmedName,
+    command: trimmedCommand,
+    order,
+  };
 
   writeConfig({ ...config, cli: nextCli });
 
@@ -276,8 +325,10 @@ async function handleEdit(
       t("cli.edit.debugUpdated", {
         previousName: target.name,
         previousCommand: target.command,
+        previousOrder: currentOrder,
         name: trimmedName,
         command: trimmedCommand,
+        order,
       })
     );
   }

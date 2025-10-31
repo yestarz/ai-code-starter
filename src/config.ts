@@ -30,6 +30,7 @@ const projectSchema = z.object({
 const cliSchema = z.object({
   name: z.string().min(1, "errors.cliNameRequired"),
   command: z.string().min(1, "errors.cliCommandRequired"),
+  order: z.number().int().nonnegative().optional(),
 });
 
 const claudeProfileSchema = z
@@ -106,14 +107,17 @@ const DEFAULT_CONFIG: AcsConfig = {
     {
       name: "CodeX",
       command: "codex",
+      order: 1,
     },
     {
       name: "Claude Code",
       command: "claude",
+      order: 2,
     },
     {
       name: "Gemini Cli",
       command: "gemini",
+      order: 3,
     },
   ],
   config: {},

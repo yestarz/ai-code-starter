@@ -58,7 +58,16 @@ export async function runCode(
     throw new Error(t("code.projectMissing"));
   }
 
-  const cliChoices = config.cli.map((tool) => ({
+  const sortedCli = [...config.cli].sort((a, b) => {
+    const orderA = a.order ?? 0;
+    const orderB = b.order ?? 0;
+    if (orderA !== orderB) {
+      return orderA - orderB;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  const cliChoices = sortedCli.map((tool) => ({
     name: `${tool.name} (${tool.command})`,
     value: tool,
   }));

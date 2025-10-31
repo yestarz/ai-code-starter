@@ -12,6 +12,7 @@ export interface Project {
 export interface CliTool {
   name: string;
   command: string;
+  order?: number;
 }
 
 export interface ClaudeProfile {

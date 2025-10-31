@@ -325,7 +325,7 @@ async function handleCliApi(
 
     // POST /api/cli - 添加 CLI 工具
     if (method === "POST" && url === "/api/cli") {
-      const body = await parseJsonBody<{ name: string; command: string }>(req);
+      const body = await parseJsonBody<{ name: string; command: string; order?: number }>(req);
       if (!body || !body.name || !body.command) {
         sendJson(res, 400, {
           success: false,
@@ -350,6 +350,13 @@ async function handleCliApi(
         command: body.command,
       };
 
+      if (body.order !== undefined && body.order !== null && body.order !== "") {
+        const orderNum = parseInt(String(body.order), 10);
+        if (!isNaN(orderNum)) {
+          newTool.order = orderNum;
+        }
+      }
+
       writeConfig({
         ...config,
         cli: [...config.cli, newTool],
@@ -367,8 +374,8 @@ async function handleCliApi(
     const editMatch = url.match(/^\/api\/cli\/(.+)$/);
     if (method === "PUT" && editMatch) {
       const oldName = decodeURIComponent(editMatch[1]);
-      const body = await parseJsonBody<{ name: string; command: string }>(req);
-      
+      const body = await parseJsonBody<{ name: string; command: string; order?: number }>(req);
+
       if (!body || !body.name || !body.command) {
         sendJson(res, 400, {
           success: false,
@@ -400,7 +407,19 @@ async function handleCliApi(
       }
 
       const updated = [...config.cli];
-      updated[index] = { name: body.name, command: body.command };
+      const updatedTool: CliTool = {
+        name: body.name,
+        command: body.command,
+      };
+
+      if (body.order !== undefined && body.order !== null && body.order !== "") {
+        const orderNum = parseInt(String(body.order), 10);
+        if (!isNaN(orderNum)) {
+          updatedTool.order = orderNum;
+        }
+      }
+
+      updated[index] = updatedTool;
 
       writeConfig({
         ...config,
@@ -766,6 +785,8 @@ export async function handleApiRequest(
     error: "未找到 API 端点",
   });
 }
+
+
 
 
 

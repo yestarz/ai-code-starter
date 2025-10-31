@@ -410,11 +410,20 @@ function CliTab() {
     setModalVisible(true);
   };
 
-  const filteredTools = cliTools.filter(
-    (t) =>
-      t.name.toLowerCase().includes(searchText.toLowerCase()) ||
-      t.command.toLowerCase().includes(searchText.toLowerCase())
-  );
+  const filteredTools = cliTools
+    .filter(
+      (t) =>
+        t.name.toLowerCase().includes(searchText.toLowerCase()) ||
+        t.command.toLowerCase().includes(searchText.toLowerCase())
+    )
+    .sort((a, b) => {
+      const orderA = a.order ?? 0;
+      const orderB = b.order ?? 0;
+      if (orderA !== orderB) {
+        return orderA - orderB;
+      }
+      return a.name.localeCompare(b.name);
+    });
 
   const columns = [
     {
@@ -428,6 +437,15 @@ function CliTab() {
       dataIndex: 'command',
       key: 'command',
       render: (text) => <Typography.Text code>{text}</Typography.Text>,
+    },
+    {
+      title: '排序',
+      dataIndex: 'order',
+      key: 'order',
+      render: (text) => {
+        const orderValue = text !== undefined && text !== null ? text : '-';
+        return <Typography.Text>{orderValue}</Typography.Text>;
+      },
     },
     {
       title: '操作',
@@ -470,6 +488,7 @@ function CliTab() {
           dataSource={filteredTools}
           rowKey="name"
           loading={loading}
+          scroll={{ x: 800 }}
           locale={{
             emptyText: (
               <Empty description="暂无 CLI 工具">
@@ -510,6 +529,13 @@ function CliTab() {
             rules={[{ required: true, message: '请输入命令' }]}
           >
             <Input placeholder="例如: codex" />
+          </Form.Item>
+          <Form.Item
+            label="排序"
+            name="order"
+            tooltip="数字越小越靠前，留空则默认为0"
+          >
+            <Input type="number" placeholder="输入排序数字（可选）" />
           </Form.Item>
           <Form.Item>
             <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
