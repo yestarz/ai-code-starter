@@ -1062,8 +1062,30 @@ function App() {
   const menuItems = [
     { key: 'projects', label: '📁 项目管理' },
     { key: 'cli', label: '⚙️ CLI 工具' },
-    { key: 'config', label: '🔧 配置管理' },
+    { 
+      key: 'config', 
+      label: '🔧 配置管理',
+      children: [
+        { key: 'config/claude', label: 'Claude配置' }
+      ]
+    },
   ];
+
+  // 递归查找菜单项label的辅助函数
+  const findMenuItemLabel = (items, key) => {
+    for (const item of items) {
+      if (item.key === key) {
+        return item.label;
+      }
+      if (item.children) {
+        const found = findMenuItemLabel(item.children, key);
+        if (found) {
+          return found;
+        }
+      }
+    }
+    return null;
+  };
 
   return (
     <ConfigProvider
@@ -1131,11 +1153,11 @@ function App() {
           </Header>
           <Content style={{ padding: '24px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
             <Title level={2} style={{ marginBottom: 24 }}>
-              {menuItems.find((item) => item.key === currentTab)?.label}
+              {findMenuItemLabel(menuItems, currentTab) || 'ACS 管理平台'}
             </Title>
             {currentTab === 'projects' && <ProjectsTab />}
             {currentTab === 'cli' && <CliTab />}
-            {currentTab === 'config' && <ConfigTab />}
+            {currentTab === 'config/claude' && <ConfigTab />}
           </Content>
         </Layout>
       </AntApp>
