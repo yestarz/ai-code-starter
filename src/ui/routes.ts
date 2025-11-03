@@ -5,14 +5,32 @@ import fs from "node:fs";
 import http from "node:http";
 import type { Logger } from "../utils/logger";
 import { readConfig, writeConfig } from "../config";
-import type { AcsConfig, Project, CliTool, ClaudeProfile } from "../types";
+import type { AcsConfig, Project, CliTool, ClaudeProfile, Rule } from "../types";
 import { normalizePath } from "../utils/path";
 import { applyClaudeProfileToSettings } from "../utils/claude";
+import {
+  getGlobalRuleDir,
+  getRuleFileName,
+  writeGlobalRuleFile,
+  writeProjectRuleFile,
+} from "../utils/rules";
 
 interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+}
+
+function maskToken(value?: string): string {
+  if (!value || value === "-") {
+    return "-";
+  }
+  if (value.length <= 4) {
+    return "*".repeat(value.length);
+  }
+  const head = value.slice(0, 2);
+  const tail = value.slice(-2);
+  return `${head}****${tail}`;
 }
 
 /**
@@ -475,6 +493,268 @@ async function handleCliApi(
 }
 
 /**
+ * 处理规则管理 API
+ */
+async function handleRulesApi(
+  method: string,
+  url: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  logger: Logger
+): Promise<void> {
+  try {
+    const config = readConfig();
+
+    if (method === "GET" && url === "/api/rules") {
+      sendJson(res, 200, {
+        success: true,
+        data: config.rules,
+      });
+      return;
+    }
+
+    if (method === "POST" && url === "/api/rules") {
+      const body = await parseJsonBody<{ name?: string; rule?: string }>(req);
+      const rawName = body?.name?.trim() ?? "";
+      if (!rawName) {
+        sendJson(res, 400, {
+          success: false,
+          error: "规则名称不能为空",
+        });
+        return;
+      }
+
+      const duplicate = config.rules.find((item) => item.name === rawName);
+      if (duplicate) {
+        sendJson(res, 409, {
+          success: false,
+          error: "规则名称已存在",
+        });
+        return;
+      }
+
+      const newRule: Rule = {
+        name: rawName,
+        rule: body?.rule ?? "",
+      };
+
+      writeConfig({
+        ...config,
+        rules: [...config.rules, newRule],
+      });
+
+      logger.info(`新增规则: ${newRule.name}`);
+      sendJson(res, 201, {
+        success: true,
+        data: newRule,
+      });
+      return;
+    }
+
+    const updateMatch = url.match(/^\/api\/rules\/(.+)$/);
+    if (method === "PUT" && updateMatch) {
+      const originName = decodeURIComponent(updateMatch[1]);
+      const body = await parseJsonBody<{ name?: string; rule?: string }>(req);
+      const rawName = body?.name?.trim() ?? "";
+      if (!rawName) {
+        sendJson(res, 400, {
+          success: false,
+          error: "规则名称不能为空",
+        });
+        return;
+      }
+
+      const ruleIndex = config.rules.findIndex((item) => item.name === originName);
+      if (ruleIndex === -1) {
+        sendJson(res, 404, {
+          success: false,
+          error: "规则不存在",
+        });
+        return;
+      }
+
+      const conflict = config.rules.find(
+        (item, index) => index !== ruleIndex && item.name === rawName
+      );
+      if (conflict) {
+        sendJson(res, 409, {
+          success: false,
+          error: "规则名称已存在",
+        });
+        return;
+      }
+
+      const nextRule: Rule = {
+        name: rawName,
+        rule: body?.rule ?? "",
+      };
+
+      const nextRules = [...config.rules];
+      nextRules[ruleIndex] = nextRule;
+
+      writeConfig({
+        ...config,
+        rules: nextRules,
+      });
+
+      logger.info(`更新规则: ${originName} -> ${nextRule.name}`);
+      sendJson(res, 200, {
+        success: true,
+        data: nextRule,
+      });
+      return;
+    }
+
+    const deleteMatch = url.match(/^\/api\/rules\/(.+)$/);
+    if (method === "DELETE" && deleteMatch) {
+      const targetName = decodeURIComponent(deleteMatch[1]);
+      const nextRules = config.rules.filter((item) => item.name !== targetName);
+      if (nextRules.length === config.rules.length) {
+        sendJson(res, 404, {
+          success: false,
+          error: "规则不存在",
+        });
+        return;
+      }
+
+      writeConfig({
+        ...config,
+        rules: nextRules,
+      });
+
+      logger.info(`删除规则: ${targetName}`);
+      sendJson(res, 200, {
+        success: true,
+        data: { name: targetName },
+      });
+      return;
+    }
+
+    if (method === "POST" && url === "/api/rules/apply") {
+      const body = await parseJsonBody<{
+        ruleName?: string;
+        cliCommand?: string;
+        scope?: string;
+        projectPath?: string;
+      }>(req);
+
+      const ruleName = body?.ruleName?.trim() ?? "";
+      if (!ruleName) {
+        sendJson(res, 400, {
+          success: false,
+          error: "规则名称不能为空",
+        });
+        return;
+      }
+
+      const cliCommand = body?.cliCommand?.trim() ?? "";
+      if (!cliCommand) {
+        sendJson(res, 400, {
+          success: false,
+          error: "缺少必要的参数: cliCommand",
+        });
+        return;
+      }
+
+      const scope = body?.scope;
+      if (scope !== "global" && scope !== "project") {
+        sendJson(res, 400, {
+          success: false,
+          error: "不支持的应用范围",
+        });
+        return;
+      }
+
+      const rule = config.rules.find((item) => item.name === ruleName);
+      if (!rule) {
+        sendJson(res, 404, {
+          success: false,
+          error: "规则不存在",
+        });
+        return;
+      }
+
+      const ruleFileName = getRuleFileName(cliCommand);
+      if (!ruleFileName) {
+        sendJson(res, 400, {
+          success: false,
+          error: "不支持的 CLI 工具",
+        });
+        return;
+      }
+
+      let targetPath: string;
+      let normalizedProjectPath: string | undefined;
+
+      try {
+        if (scope === "global") {
+          targetPath = writeGlobalRuleFile(cliCommand, rule.rule ?? "");
+        } else {
+          const projectPath = body?.projectPath?.trim() ?? "";
+          if (!projectPath) {
+            sendJson(res, 400, {
+              success: false,
+              error: "选择项目范围时，projectPath 是必需的",
+            });
+            return;
+          }
+          targetPath = writeProjectRuleFile(projectPath, cliCommand, rule.rule ?? "");
+          normalizedProjectPath = normalizePath(projectPath);
+        }
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        const message = err.message || "应用规则失败";
+        let status = 500;
+        let displayMessage = message;
+
+        if (
+          message === "不支持的 CLI 工具" ||
+          message === "项目路径不存在" ||
+          message === "项目路径不是目录" ||
+          message.includes("projectPath 是必需的")
+        ) {
+          status = 400;
+        } else if (err.code === "EACCES" || err.code === "EPERM") {
+          displayMessage = "文件写入权限不足";
+        }
+
+        logger.error(`应用规则失败: ${displayMessage}`);
+        sendJson(res, status, {
+          success: false,
+          error: displayMessage,
+        });
+        return;
+      }
+
+      sendJson(res, 200, {
+        success: true,
+        data: {
+          ruleName,
+          cliCommand,
+          scope,
+          projectPath: normalizedProjectPath,
+          targetPath: normalizePath(targetPath),
+          fileName: ruleFileName,
+          globalDir: getGlobalRuleDir(cliCommand),
+        },
+      });
+      return;
+    }
+
+    sendJson(res, 404, {
+      success: false,
+      error: "未找到 API 端点",
+    });
+  } catch (error) {
+    logger.error(`处理规则 API 错误: ${(error as Error).message}`);
+    sendJson(res, 500, {
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+}
+
+/**
  * 处理 Claude 配置相关 API
  */
 async function handleClaudeConfigApi(
@@ -517,8 +797,9 @@ async function handleClaudeConfigApi(
 
       const env = { ...(currentProfile.env ?? {}) };
       env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-      env.ANTHROPIC_AUTH_TOKEN =
-        env.ANTHROPIC_AUTH_TOKEN ?? "-";
+      env.ANTHROPIC_AUTH_TOKEN = maskToken(
+        env.ANTHROPIC_AUTH_TOKEN
+      );
 
       const currentProfileData = {
         name: claudeConfig.current,
@@ -539,8 +820,9 @@ async function handleClaudeConfigApi(
         ([name, profile]) => {
           const env = { ...(profile.env ?? {}) };
           env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-          env.ANTHROPIC_AUTH_TOKEN =
-            env.ANTHROPIC_AUTH_TOKEN ?? "-";
+          env.ANTHROPIC_AUTH_TOKEN = maskToken(
+            env.ANTHROPIC_AUTH_TOKEN
+          );
 
           return {
             name,
@@ -770,6 +1052,12 @@ export async function handleApiRequest(
   // CLI 工具管理 API
   if (url.startsWith("/api/cli")) {
     await handleCliApi(method, url, req, res, logger);
+    return;
+  }
+
+  // 规则管理 API
+  if (url.startsWith("/api/rules")) {
+    await handleRulesApi(method, url, req, res, logger);
     return;
   }
 

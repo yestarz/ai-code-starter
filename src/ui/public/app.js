@@ -2,7 +2,7 @@
  * ACS Web 管理界面 - 使用 React + Ant Design
  */
 
-const { useState, useEffect } = React;
+const { useState, useEffect, useMemo } = React;
 const {
   Layout,
   Menu,
@@ -24,6 +24,9 @@ const {
   theme,
   Switch,
   App: AntApp,
+  Tabs,
+  Select,
+  Radio,
 } = antd;
 const { EyeOutlined, EyeInvisibleOutlined } = icons;
 
@@ -42,6 +45,50 @@ const Icon = {
       ➕
     </span>
   ),
+};
+
+const CLI_RULE_OPTIONS = [
+  {
+    value: 'claude',
+    label: 'Claude Code',
+    fileName: 'CLAUDE.md',
+    globalPath: '~/.claude/CLAUDE.md',
+  },
+  {
+    value: 'codex',
+    label: 'Codex',
+    fileName: 'AGENTS.md',
+    globalPath: '~/.codex/AGENTS.md',
+  },
+  {
+    value: 'gemini',
+    label: 'Gemini CLI',
+    fileName: 'GEMINI.md',
+    globalPath: '~/.gemini/GEMINI.md',
+  },
+];
+
+const markdownToHtml = (markdown = '') => {
+  if (window.marked && typeof window.marked.parse === 'function') {
+    return window.marked.parse(markdown);
+  }
+  return markdown
+    .replace(/[&<>]/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+    }[char] || char))
+    .replace(/\n/g, '<br />');
+};
+
+const joinDisplayPath = (basePath = '', fileName = '') => {
+  if (!basePath) {
+    return fileName;
+  }
+  const trimmed = basePath.replace(/[\\/]+$/, '');
+  const useBackslash = trimmed.includes('\\') && !trimmed.includes('/');
+  const separator = useBackslash ? '\\' : '/';
+  return `${trimmed}${separator}${fileName}`;
 };
 
 const { Header, Content } = Layout;
@@ -548,6 +595,507 @@ function CliTab() {
               </Button>
               <Button type="primary" htmlType="submit">
                 {editingTool ? '保存' : '添加'}
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}
+
+// 规则管理组件
+function RulesTab() {
+  const { modal } = AntApp.useApp();
+  const [loading, setLoading] = useState(false);
+  const [rules, setRules] = useState([]);
+  const [searchText, setSearchText] = useState('');
+  const [editorVisible, setEditorVisible] = useState(false);
+  const [editingRuleName, setEditingRuleName] = useState(null);
+  const [editorSubmitting, setEditorSubmitting] = useState(false);
+  const [rulesForm] = Form.useForm();
+  const markdownValue = Form.useWatch('rule', rulesForm) || '';
+  const previewHtml = useMemo(
+    () => markdownToHtml(markdownValue || ''),
+    [markdownValue]
+  );
+  const { token } = theme.useToken();
+  const previewContainerStyle = useMemo(
+    () => ({
+      minHeight: 300,
+      border: `1px solid ${token.colorBorderSecondary}`,
+      borderRadius: token.borderRadiusLG,
+      padding: 16,
+      overflowY: 'auto',
+      background: token.colorFillAlter,
+      color: token.colorText,
+    }),
+    [token]
+  );
+  const previewVariableStyle = useMemo(
+    () => ({
+      '--markdown-code-bg': token.colorFillSecondary,
+      '--markdown-inline-bg': token.colorFillSecondary,
+      '--markdown-link-color': token.colorLink,
+      '--markdown-border-color': token.colorBorderSecondary,
+    }),
+    [token]
+  );
+
+  const [applyVisible, setApplyVisible] = useState(false);
+  const [selectedRule, setSelectedRule] = useState(null);
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [applyForm] = Form.useForm();
+  const cliValue =
+    Form.useWatch('cliCommand', applyForm) || CLI_RULE_OPTIONS[0].value;
+  const scopeValue = Form.useWatch('scope', applyForm) || 'global';
+  const projectPathValue = Form.useWatch('projectPath', applyForm) || '';
+  const targetPath = useMemo(() => {
+    const meta = CLI_RULE_OPTIONS.find((item) => item.value === cliValue);
+    if (!meta) {
+      return '';
+    }
+    if (scopeValue === 'global') {
+      return meta.globalPath;
+    }
+    if (!projectPathValue) {
+      return '';
+    }
+    return joinDisplayPath(projectPathValue, meta.fileName);
+  }, [cliValue, scopeValue, projectPathValue]);
+
+  const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+
+  useEffect(() => {
+    loadRules();
+    loadProjects();
+  }, []);
+
+  const loadRules = async () => {
+    setLoading(true);
+    try {
+      const result = await api.get('/api/rules');
+      if (result.success) {
+        setRules(result.data || []);
+      } else {
+        message.error('加载规则失败: ' + result.error);
+      }
+    } catch (error) {
+      message.error('加载规则失败: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadProjects = async () => {
+    setProjectsLoading(true);
+    try {
+      const result = await api.get('/api/projects');
+      if (result.success) {
+        setProjects(result.data || []);
+      }
+    } catch (error) {
+      message.error('加载项目列表失败: ' + error.message);
+    } finally {
+      setProjectsLoading(false);
+    }
+  };
+
+  const openEditor = (rule = null) => {
+    setEditingRuleName(rule ? rule.name : null);
+    rulesForm.resetFields();
+    if (rule) {
+      rulesForm.setFieldsValue({
+        name: rule.name,
+        rule: rule.rule,
+      });
+    } else {
+      rulesForm.setFieldsValue({
+        name: '',
+        rule: '',
+      });
+    }
+    setEditorVisible(true);
+  };
+
+  const closeEditor = () => {
+    setEditorVisible(false);
+    setEditingRuleName(null);
+    rulesForm.resetFields();
+  };
+
+  const handleEditorSubmit = async () => {
+    try {
+      const values = await rulesForm.validateFields();
+      setEditorSubmitting(true);
+      if (editingRuleName) {
+        const result = await api.put(
+          `/api/rules/${encodeURIComponent(editingRuleName)}`,
+          values
+        );
+        if (result.success) {
+          message.success('规则更新成功');
+          closeEditor();
+          loadRules();
+        } else {
+          message.error('更新失败: ' + result.error);
+        }
+      } else {
+        const result = await api.post('/api/rules', values);
+        if (result.success) {
+          message.success('规则新增成功');
+          closeEditor();
+          loadRules();
+        } else {
+          message.error('新增失败: ' + result.error);
+        }
+      }
+    } catch (error) {
+      if (error?.errorFields) {
+        return;
+      }
+      message.error('保存失败: ' + error.message);
+    } finally {
+      setEditorSubmitting(false);
+    }
+  };
+
+  const handleDelete = (rule) => {
+    modal.confirm({
+      title: '确认删除',
+      content: `确定要删除规则 "${rule.name}" 吗？`,
+      okText: '确定',
+      cancelText: '取消',
+      okType: 'danger',
+      onOk: async () => {
+        try {
+          const result = await api.delete(
+            `/api/rules/${encodeURIComponent(rule.name)}`
+          );
+          if (result.success) {
+            message.success('规则删除成功');
+            loadRules();
+          } else {
+            message.error('删除失败: ' + result.error);
+          }
+        } catch (error) {
+          message.error('删除失败: ' + error.message);
+        }
+      },
+    });
+  };
+
+  const openApplyModal = (rule) => {
+    setSelectedRule(rule);
+    applyForm.resetFields();
+    applyForm.setFieldsValue({
+      cliCommand: CLI_RULE_OPTIONS[0].value,
+      scope: 'global',
+      projectPath: undefined,
+    });
+    setApplyVisible(true);
+  };
+
+  const closeApplyModal = () => {
+    setApplyVisible(false);
+    setSelectedRule(null);
+    applyForm.resetFields();
+  };
+
+  const handleApplySubmit = async (values) => {
+    if (!selectedRule) {
+      message.error('未选择规则');
+      return;
+    }
+    if (!targetPath) {
+      message.warning('请先补全 CLI 类型与应用范围设置');
+      return;
+    }
+    modal.confirm({
+      title: '确认应用规则',
+      content: (
+        <div>
+          <p>将规则 "{selectedRule.name}" 应用到以下位置：</p>
+          <Typography.Text code>
+            {targetPath || '目标位置未确定'}
+          </Typography.Text>
+          <p style={{ marginTop: 12 }}>
+            提示: 如果文件已存在，将自动创建备份文件。
+          </p>
+        </div>
+      ),
+      okText: '确认应用',
+      cancelText: '取消',
+      onOk: () =>
+        new Promise(async (resolve, reject) => {
+          try {
+            setApplyLoading(true);
+            const payload = {
+              ruleName: selectedRule.name,
+              cliCommand: values.cliCommand,
+              scope: values.scope,
+              projectPath:
+                values.scope === 'project' ? values.projectPath : undefined,
+            };
+            const result = await api.post('/api/rules/apply', payload);
+            if (result.success) {
+              message.success('规则应用成功');
+              closeApplyModal();
+              resolve(true);
+            } else {
+              const errorMessage = result.error || '应用失败';
+              message.error('应用失败: ' + errorMessage);
+              reject(new Error(errorMessage));
+            }
+          } catch (error) {
+            message.error('应用失败: ' + error.message);
+            reject(error);
+          } finally {
+            setApplyLoading(false);
+          }
+        }),
+    });
+  };
+
+  const filteredRules = rules.filter((rule) =>
+    rule.name.toLowerCase().includes(searchText.toLowerCase())
+  );
+
+  const columns = [
+    {
+      title: '规则名称',
+      dataIndex: 'name',
+      key: 'name',
+      render: (text) => <strong>{text}</strong>,
+    },
+    {
+      title: '规则内容预览',
+      key: 'preview',
+      render: (_, record) => (
+        <Button
+          type="link"
+          size="small"
+          onClick={() => openEditor(record)}
+          style={{ padding: 0 }}
+        >
+          [点击查看详情]
+        </Button>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 240,
+      render: (_, record) => (
+        <Space>
+          <Button size="small" onClick={() => openEditor(record)}>
+            编辑
+          </Button>
+          <Button size="small" onClick={() => openApplyModal(record)}>
+            应用
+          </Button>
+          <Button danger size="small" onClick={() => handleDelete(record)}>
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div
+        style={{
+          marginBottom: 16,
+          display: 'flex',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Search
+          placeholder="搜索规则名称..."
+          allowClear
+          style={{ width: 300 }}
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+        />
+        <Button type="primary" onClick={() => openEditor(null)}>
+          新增规则
+        </Button>
+      </div>
+
+      <Card>
+        <Table
+          columns={columns}
+          dataSource={filteredRules}
+          rowKey="name"
+          loading={loading}
+          locale={{
+            emptyText: (
+              <Empty description="暂无规则">
+                <Button type="primary" onClick={() => openEditor(null)}>
+                  添加第一条规则
+                </Button>
+              </Empty>
+            ),
+          }}
+        />
+      </Card>
+
+      <Modal
+        title={editingRuleName ? '编辑规则' : '新增规则'}
+        open={editorVisible}
+        width={840}
+        onCancel={closeEditor}
+        footer={null}
+        destroyOnClose
+      >
+        <Form form={rulesForm} layout="vertical">
+          <Form.Item
+            label="规则名称"
+            name="name"
+            rules={[
+              { required: true, message: '请输入规则名称' },
+              {
+                validator: (_, value) => {
+                  if (value && value.trim()) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error('规则名称不能为空'));
+                },
+              },
+            ]}
+          >
+            <Input placeholder="输入唯一的规则名称" />
+          </Form.Item>
+          <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+            规则内容
+          </Typography.Text>
+          <Tabs
+            destroyInactiveTabPane={false}
+            items={[
+              {
+                key: 'edit',
+                label: '编辑',
+                children: (
+                  <Form.Item
+                    name="rule"
+                    initialValue=""
+                    style={{ marginBottom: 0 }}
+                  >
+                    <Input.TextArea
+                      rows={14}
+                      placeholder="支持 Markdown 语法，可使用标题、列表、代码块等结构"
+                    />
+                  </Form.Item>
+                ),
+              },
+              {
+                key: 'preview',
+                label: '预览',
+                children: (
+                  <div
+                    style={{
+                      ...previewContainerStyle,
+                      ...previewVariableStyle,
+                    }}
+                  >
+                    {markdownValue ? (
+                      <div
+                        className="markdown-preview"
+                        style={{
+                          color: token.colorText,
+                        }}
+                        dangerouslySetInnerHTML={{ __html: previewHtml }}
+                      />
+                    ) : (
+                      <Empty description="暂无内容" />
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+          />
+          <Form.Item style={{ marginTop: 16, marginBottom: 0 }}>
+            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Button onClick={closeEditor}>取消</Button>
+              <Button
+                type="primary"
+                onClick={handleEditorSubmit}
+                loading={editorSubmitting}
+              >
+                保存
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={selectedRule ? `应用规则: ${selectedRule.name}` : '应用规则'}
+        open={applyVisible}
+        onCancel={closeApplyModal}
+        footer={null}
+        destroyOnClose
+      >
+        <Form form={applyForm} layout="vertical" onFinish={handleApplySubmit}>
+          <Form.Item
+            label="CLI 类型"
+            name="cliCommand"
+            initialValue={CLI_RULE_OPTIONS[0].value}
+            rules={[{ required: true, message: '请选择 CLI 类型' }]}
+          >
+            <Select
+              options={CLI_RULE_OPTIONS.map((item) => ({
+                label: item.label,
+                value: item.value,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item
+            label="应用范围"
+            name="scope"
+            initialValue="global"
+            rules={[{ required: true, message: '请选择应用范围' }]}
+          >
+            <Radio.Group>
+              <Radio value="global">全局</Radio>
+              <Radio value="project">项目</Radio>
+            </Radio.Group>
+          </Form.Item>
+          {scopeValue === 'project' && (
+            <Form.Item
+              label="选择项目"
+              name="projectPath"
+              rules={[{ required: true, message: '请选择项目' }]}
+            >
+              <Select
+                loading={projectsLoading}
+                placeholder="选择要应用规则的项目"
+                options={projects.map((project) => ({
+                  label: `${project.name} (${project.path})`,
+                  value: project.path,
+                }))}
+                showSearch
+                optionFilterProp="label"
+              />
+            </Form.Item>
+          )}
+          <Form.Item label="目标位置">
+            <Typography.Text code>
+              {targetPath || '请先选择 CLI 类型与应用范围'}
+            </Typography.Text>
+          </Form.Item>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Button onClick={closeApplyModal}>取消</Button>
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={applyLoading}
+                disabled={!targetPath}
+              >
+                确认应用
               </Button>
             </Space>
           </Form.Item>
@@ -1088,6 +1636,7 @@ function App() {
   const menuItems = [
     { key: 'projects', label: '📁 项目管理' },
     { key: 'cli', label: '⚙️ CLI 工具' },
+    { key: 'rules', label: '📜 规则管理' },
     { 
       key: 'config', 
       label: '🔧 配置管理',
@@ -1183,6 +1732,7 @@ function App() {
             </Title>
             {currentTab === 'projects' && <ProjectsTab />}
             {currentTab === 'cli' && <CliTab />}
+            {currentTab === 'rules' && <RulesTab />}
             {currentTab === 'config/claude' && <ConfigTab />}
           </Content>
         </Layout>

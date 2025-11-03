@@ -15,6 +15,11 @@ export interface CliTool {
   order?: number;
 }
 
+export interface Rule {
+  name: string;
+  rule: string;
+}
+
 export interface ClaudeProfile {
   env?: Record<string, string>;
   model?: string;
@@ -35,6 +40,7 @@ export interface AcsConfig {
   cli: CliTool[];
   language: Language;
   config: ProviderConfigs;
+  rules: Rule[];
 }
 
 export interface CommandContext {

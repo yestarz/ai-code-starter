@@ -106,7 +106,7 @@ describe("acs config claude 命令", () => {
     ).toBe(true);
     expect(
       printedLines.some((line) =>
-        line.includes("ANTHROPIC_AUTH_TOKEN: sk-a*******6789")
+        line.includes("ANTHROPIC_AUTH_TOKEN: sk****89")
       )
     ).toBe(true);
   });

@@ -33,6 +33,7 @@ describe("acs CLI 鍐掔儫娴嬭瘯", () => {
     expect(config.cli).toContainEqual({
       name: "CodeX",
       command: "codex",
+      order: 1,
     });
 
     const configPath = getConfigPath();

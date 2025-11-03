@@ -143,7 +143,7 @@ describe("acs ui 服务端", () => {
     expect(claudeData.name).toBe("dev");
     expect(claudeData.model).toBe("claude-3-sonnet");
     // Token 应该被打码
-    expect(claudeData.env.ANTHROPIC_AUTH_TOKEN).toMatch(/^abcd\*+abcd$/);
+    expect(claudeData.env.ANTHROPIC_AUTH_TOKEN).toMatch(/^ab\*+cd$/);
 
     const config = readConfig();
     expect(config.config.claude?.current).toBe("dev");
@@ -186,5 +186,114 @@ describe("acs ui 服务端", () => {
     const config = readConfig();
     const stored = config.projects.find((item) => item.name === "origin");
     expect(stored?.path).toBe(path.resolve(originDir));
+  });
+
+  it("支持规则 CRUD 与应用流程", async () => {
+    const projectDir = path.join(tempHome, "workspace");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const encodedRuleName = encodeURIComponent("工程规范");
+
+    // 新增规则
+    await api("/api/rules", {
+      method: "POST",
+      json: { name: "工程规范", rule: "# 初始内容" },
+    });
+
+    let rules = await api<Array<{ name: string; rule: string }>>("/api/rules");
+    expect(rules).toHaveLength(1);
+    expect(rules[0].rule).toContain("初始");
+
+    // 更新规则内容
+    await api(`/api/rules/${encodedRuleName}`, {
+      method: "PUT",
+      json: { name: "工程规范", rule: "# 更新后的内容" },
+    });
+
+    // 全局应用
+    const globalApply = await api<{
+      targetPath: string;
+    }>("/api/rules/apply", {
+      method: "POST",
+      json: {
+        ruleName: "工程规范",
+        cliCommand: "codex",
+        scope: "global",
+      },
+    });
+    const globalPath = path.join(tempHome, ".codex", "AGENTS.md");
+    expect(globalApply.targetPath).toBe(globalPath);
+    expect(fs.readFileSync(globalPath, "utf-8")).toBe("# 更新后的内容");
+
+    // 再次更新并应用以触发备份
+    await api(`/api/rules/${encodedRuleName}`, {
+      method: "PUT",
+      json: { name: "工程规范", rule: "# 第二次内容" },
+    });
+    await api("/api/rules/apply", {
+      method: "POST",
+      json: {
+        ruleName: "工程规范",
+        cliCommand: "codex",
+        scope: "global",
+      },
+    });
+    expect(fs.readFileSync(`${globalPath}.bak`, "utf-8")).toBe("# 更新后的内容");
+    expect(fs.readFileSync(globalPath, "utf-8")).toBe("# 第二次内容");
+
+    // 应用到项目
+    const projectApply = await api<{
+      targetPath: string;
+    }>("/api/rules/apply", {
+      method: "POST",
+      json: {
+        ruleName: "工程规范",
+        cliCommand: "claude",
+        scope: "project",
+        projectPath: projectDir,
+      },
+    });
+    const projectFile = path.join(projectDir, "CLAUDE.md");
+    expect(projectApply.targetPath).toBe(projectFile);
+    expect(fs.readFileSync(projectFile, "utf-8")).toBe("# 第二次内容");
+
+    // 再次应用到项目以生成备份
+    await api(`/api/rules/${encodedRuleName}`, {
+      method: "PUT",
+      json: { name: "工程规范", rule: "# 第三次内容" },
+    });
+    await api("/api/rules/apply", {
+      method: "POST",
+      json: {
+        ruleName: "工程规范",
+        cliCommand: "claude",
+        scope: "project",
+        projectPath: projectDir,
+      },
+    });
+    expect(fs.readFileSync(`${projectFile}.bak`, "utf-8")).toBe("# 第二次内容");
+    expect(fs.readFileSync(projectFile, "utf-8")).toBe("# 第三次内容");
+
+    const missingProject = path.join(tempHome, "missing-project");
+    await expect(
+      api("/api/rules/apply", {
+        method: "POST",
+        json: {
+          ruleName: "工程规范",
+          cliCommand: "claude",
+          scope: "project",
+          projectPath: missingProject,
+        },
+      })
+    ).rejects.toThrow("项目路径不存在");
+
+    // 删除规则
+    await api(`/api/rules/${encodedRuleName}`, {
+      method: "DELETE",
+    });
+    rules = await api<Array<{ name: string }>>("/api/rules");
+    expect(rules).toHaveLength(0);
+
+    const config = readConfig();
+    expect(config.rules).toHaveLength(0);
   });
 });

@@ -13,7 +13,7 @@ import {
   restoreBackupSync,
   writeJsonFileSync,
 } from "./utils/fs";
-import { AcsConfig, Project } from "./types";
+import { AcsConfig, Project, Rule } from "./types";
 import type { Language } from "./i18n";
 import { normalizePath } from "./utils/path";
 
@@ -31,6 +31,11 @@ const cliSchema = z.object({
   name: z.string().min(1, "errors.cliNameRequired"),
   command: z.string().min(1, "errors.cliCommandRequired"),
   order: z.number().int().nonnegative().optional(),
+});
+
+const ruleSchema = z.object({
+  name: z.string().min(1, "errors.ruleNameRequired"),
+  rule: z.string().default(""),
 });
 
 const claudeProfileSchema = z
@@ -67,6 +72,7 @@ const configSchema = z.object({
   projects: z.array(projectSchema).default([]),
   cli: z.array(cliSchema).default([]),
   config: providerConfigSchema,
+  rules: z.array(ruleSchema).default([]),
 });
 
 export type ConfigErrorCode = "read_failed" | "invalid_format" | "write_failed";
@@ -120,7 +126,12 @@ const DEFAULT_CONFIG: AcsConfig = {
       order: 3,
     },
   ],
-  config: {},
+  config: {
+    claude: {
+      configs: {},
+    },
+  },
+  rules: [],
 };
 
 function resolveConfigDir(): string {
@@ -186,6 +197,7 @@ export function readConfig(): AcsConfig {
     projects: normalizedProjects,
     cli: parsed.data.cli,
     config: parsed.data.config,
+    rules: parsed.data.rules as Rule[],
   };
 }
 

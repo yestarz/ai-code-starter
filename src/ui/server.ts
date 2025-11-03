@@ -164,9 +164,13 @@ export async function startUiServer(
     });
 
     server.listen(port, host, () => {
-      const url = `http://${host}:${port}`;
+      const address = server.address();
+      const listenPort =
+        typeof address === "object" && address
+          ? address.port
+          : port;
+      const url = `http://${host}:${listenPort}`;
       resolve({ url, server });
     });
   });
 }
-
