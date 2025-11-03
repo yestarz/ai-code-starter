@@ -797,9 +797,7 @@ async function handleClaudeConfigApi(
 
       const env = { ...(currentProfile.env ?? {}) };
       env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-      env.ANTHROPIC_AUTH_TOKEN = maskToken(
-        env.ANTHROPIC_AUTH_TOKEN
-      );
+      env.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN ?? "-";
 
       const currentProfileData = {
         name: claudeConfig.current,
@@ -820,9 +818,7 @@ async function handleClaudeConfigApi(
         ([name, profile]) => {
           const env = { ...(profile.env ?? {}) };
           env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-          env.ANTHROPIC_AUTH_TOKEN = maskToken(
-            env.ANTHROPIC_AUTH_TOKEN
-          );
+          env.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN ?? "-";
 
           return {
             name,
