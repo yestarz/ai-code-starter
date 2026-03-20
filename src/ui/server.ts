@@ -4,7 +4,6 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Logger } from "../utils/logger";
 import { handleApiRequest } from "./routes";
 
@@ -114,12 +113,9 @@ async function requestHandler(
   }
 
   // 静态文件服务
-  // 在打包后的 CommonJS 环境中，使用相对于当前模块的路径
-  const dirname =
-    typeof __dirname !== "undefined"
-      ? __dirname
-      : path.dirname(fileURLToPath(import.meta.url));
-  const publicDir = resolvePublicDirectory(dirname);
+  // CommonJS 产物优先使用模块目录；开发态回退到工作目录中的静态资源。
+  const baseDir = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+  const publicDir = resolvePublicDirectory(baseDir);
 
   let filePath: string;
   if (url === "/" || url === "/index.html") {

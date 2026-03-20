@@ -33,6 +33,16 @@ function maskToken(value?: string): string {
   return `${head}****${tail}`;
 }
 
+function toDisplayClaudeEnv(
+  env: Record<string, string> | undefined
+): Record<string, string> {
+  return {
+    ...(env ?? {}),
+    ANTHROPIC_BASE_URL: env?.ANTHROPIC_BASE_URL ?? "-",
+    ANTHROPIC_AUTH_TOKEN: maskToken(env?.ANTHROPIC_AUTH_TOKEN),
+  };
+}
+
 /**
  * 发送 JSON 响应
  */
@@ -795,13 +805,9 @@ async function handleClaudeConfigApi(
         return;
       }
 
-      const env = { ...(currentProfile.env ?? {}) };
-      env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-      env.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN ?? "-";
-
       const currentProfileData = {
         name: claudeConfig.current,
-        env,
+        env: toDisplayClaudeEnv(currentProfile.env),
         model: currentProfile.model ?? "-",
       };
 
@@ -816,14 +822,10 @@ async function handleClaudeConfigApi(
     if (method === "GET" && url === "/api/config/claude/list") {
       const profiles = Object.entries(claudeConfig.configs).map(
         ([name, profile]) => {
-          const env = { ...(profile.env ?? {}) };
-          env.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL ?? "-";
-          env.ANTHROPIC_AUTH_TOKEN = env.ANTHROPIC_AUTH_TOKEN ?? "-";
-
           return {
             name,
             isCurrent: claudeConfig.current === name,
-            env,
+            env: toDisplayClaudeEnv(profile.env),
             model: profile.model ?? "-",
           };
         }
@@ -1069,7 +1071,6 @@ export async function handleApiRequest(
     error: "未找到 API 端点",
   });
 }
-
 
 
 
