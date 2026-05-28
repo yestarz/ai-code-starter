@@ -1,0 +1,52 @@
+name: Release to npm
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: npm ci
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Sync package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - run: npm test
+
+      - run: npm run build
+
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Send success notification
+        if: success()
+        run: |
+          curl -X POST "https://api.chuckfang.com/${{ secrets.MEOW_NICKNAME }}?msgType=text" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\":\"ai-code-starter\",\"msg\":\"ai-code-starter 发布成功，版本: ${{ steps.version.outputs.version }}\"}"
+
+      - name: Send failure notification
+        if: failure()
+        run: |
+          curl -X POST "https://api.chuckfang.com/${{ secrets.MEOW_NICKNAME }}?msgType=text" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\":\"ai-code-starter\",\"msg\":\"ai-code-starter 发布失败，版本: ${{ steps.version.outputs.version }}\"}"
