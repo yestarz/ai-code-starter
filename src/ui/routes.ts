@@ -21,25 +21,13 @@ interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-function maskToken(value?: string): string {
-  if (!value || value === "-") {
-    return "-";
-  }
-  if (value.length <= 4) {
-    return "*".repeat(value.length);
-  }
-  const head = value.slice(0, 2);
-  const tail = value.slice(-2);
-  return `${head}****${tail}`;
-}
-
 function toDisplayClaudeEnv(
   env: Record<string, string> | undefined
 ): Record<string, string> {
   return {
     ...(env ?? {}),
     ANTHROPIC_BASE_URL: env?.ANTHROPIC_BASE_URL ?? "-",
-    ANTHROPIC_AUTH_TOKEN: maskToken(env?.ANTHROPIC_AUTH_TOKEN),
+    ANTHROPIC_AUTH_TOKEN: env?.ANTHROPIC_AUTH_TOKEN ?? "-",
   };
 }
 

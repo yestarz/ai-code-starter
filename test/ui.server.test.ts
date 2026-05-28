@@ -142,8 +142,8 @@ describe("acs ui 服务端", () => {
     }>("/api/config/claude/current");
     expect(claudeData.name).toBe("dev");
     expect(claudeData.model).toBe("claude-3-sonnet");
-    // Token 应该被打码
-    expect(claudeData.env.ANTHROPIC_AUTH_TOKEN).toMatch(/^ab\*+cd$/);
+    // Token 不再被打码
+    expect(claudeData.env.ANTHROPIC_AUTH_TOKEN).toBe("abcd1234abcd");
 
     const config = readConfig();
     expect(config.config.claude?.current).toBe("dev");
