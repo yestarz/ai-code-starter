@@ -30,6 +30,8 @@ export default defineConfig({
     js: '#!/usr/bin/env node',
   },
   clean: true,
+  // 将所有依赖打包进 bundle，避免运行时模块解析开销
+  noExternal: [/.*/],
   onSuccess: async () => {
     // 复制 UI 静态文件到 dist 目录
     console.log('Copying UI public files...');
